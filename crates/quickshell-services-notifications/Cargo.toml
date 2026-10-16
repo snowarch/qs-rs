@@ -1,0 +1,15 @@
+[package]
+name = "quickshell_services_notifications"
+version.workspace = true
+edition.workspace = true
+links = "quickshell_services_notifications"
+
+[dependencies]
+cxx.workspace = true
+cxx-qt.workspace = true
+cxx-qt-lib.workspace = true
+qs_dbus = { path = "../qs-dbus" }
+zbus.workspace = true
+
+[build-dependencies]
+cxx-qt-build.workspace = true

@@ -1032,6 +1032,7 @@ dependencies = [
  "quickshell_hyprland",
  "quickshell_io",
  "quickshell_services_mpris",
+ "quickshell_services_notifications",
  "quickshell_services_pipewire",
  "quickshell_services_upower",
  "quickshell_wayland",
@@ -1113,6 +1114,18 @@ dependencies = [
  "cxx-qt-build",
  "cxx-qt-lib",
  "qs_dbus",
+]
+
+[[package]]
+name = "quickshell_services_notifications"
+version = "0.1.0"
+dependencies = [
+ "cxx",
+ "cxx-qt",
+ "cxx-qt-build",
+ "cxx-qt-lib",
+ "qs_dbus",
+ "zbus",
 ]
 
 [[package]]
