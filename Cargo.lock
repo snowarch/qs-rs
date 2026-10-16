@@ -663,6 +663,7 @@ dependencies = [
  "quickshell",
  "quickshell_hyprland",
  "quickshell_io",
+ "quickshell_services_pipewire",
  "quickshell_wayland",
 ]
 

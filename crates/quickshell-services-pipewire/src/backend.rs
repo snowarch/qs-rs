@@ -79,12 +79,17 @@ fn parse_route(pod: &Pod) -> Option<(i32, i32)> {
     Some((device?, index?))
 }
 
+/// `name` of a default-node metadata value. Accepts strict JSON (`{"name":"x"}`, what
+/// WirePlumber writes) and SPA's relaxed JSON (`{ name = x }`).
 fn json_name(value: &str) -> Option<String> {
-    let start = value.find("\"name\"")? + 6;
-    let rest = &value[start..];
-    let q1 = rest.find('"')? + 1;
-    let q2 = rest[q1..].find('"')? + q1;
-    Some(rest[q1..q2].to_string())
+    let start = value.find("name")? + 4;
+    let rest = value[start..].strip_prefix('"').unwrap_or(&value[start..]);
+    let rest = rest.trim_start().strip_prefix([':', '='])?.trim_start();
+    let name = match rest.strip_prefix('"') {
+        Some(quoted) => &quoted[..quoted.find('"')?],
+        None => &rest[..rest.find(|c: char| c == ',' || c == '}' || c.is_whitespace()).unwrap_or(rest.len())],
+    };
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 struct NodeEntry {
@@ -142,6 +147,10 @@ pub fn run(emit: impl Fn(Update) + 'static, commands: pw::channel::Receiver<Comm
                     let listener = node
                         .add_listener_local()
                         .info(move |info| {
+                            // Later info events carry an empty dict unless the props changed.
+                            if !info.change_mask().contains(pw::node::NodeChangeMask::PROPS) {
+                                return;
+                            }
                             if let Some(d) = info.props() {
                                 let props: Vec<(String, String)> = d.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
                                 let get = |k: &str| props.iter().find(|(pk, _)| pk == k).and_then(|(_, v)| v.parse::<i64>().ok());
@@ -323,5 +332,9 @@ mod tests {
     #[test]
     fn json_name_extracts() {
         assert_eq!(super::json_name(r#"{ "name": "alsa_output.pci" }"#).as_deref(), Some("alsa_output.pci"));
+        assert_eq!(super::json_name(r#"{"name":"a b"}"#).as_deref(), Some("a b"));
+        assert_eq!(super::json_name("{ name = qsrs-test-sink }").as_deref(), Some("qsrs-test-sink"));
+        assert_eq!(super::json_name("{ name: x, other = 1 }").as_deref(), Some("x"));
+        assert_eq!(super::json_name("{}"), None);
     }
 }
