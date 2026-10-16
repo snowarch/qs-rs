@@ -158,6 +158,13 @@ public:
 		return region;
 	}
 
+	// Against a window rect the default (Combine) keeps the region as is instead of uniting it
+	// with the whole rect, so an empty `Region {}` mask makes a window click-through.
+	[[nodiscard]] QRegion applyTo(const QRect& rect) const {
+		if (this->mIntersection == Intersection::Combine) return this->build();
+		return this->applyTo(QRegion(rect));
+	}
+
 signals:
 	void changed();
 	void itemChanged();
@@ -216,9 +223,16 @@ public:
 	Q_INVOKABLE void applyMask(QQuickWindow* window, PendingRegion* mask) {
 		if (!window) return;
 		QRegion region;
-		if (mask) region = mask->applyTo(QRegion(0, 0, window->width(), window->height()));
+		if (mask) region = mask->applyTo(QRect(0, 0, window->width(), window->height()));
 		window->setFlag(Qt::WindowTransparentForInput, mask != nullptr && region.isEmpty());
 		window->setMask(region);
+	}
+
+	// Bounding rect of a window's input mask as "x,y wxh" (tests).
+	Q_INVOKABLE QString maskRect(QWindow* window) {
+		if (!window) return {};
+		auto r = window->mask().boundingRect();
+		return QString("%1,%2 %3x%4").arg(r.x()).arg(r.y()).arg(r.width()).arg(r.height());
 	}
 
 	Q_INVOKABLE void registerProxy(QQuickWindow* window, QObject* proxy) {
