@@ -29,11 +29,12 @@ fn qstr(p: &std::path::Path) -> QString {
     QString::from(&*p.to_string_lossy())
 }
 
-const USAGE: &str = "usage: qs-rs [-p <path> | -c <name>] [ipc (call <target> <function> [args...] | show)]";
+const USAGE: &str = "usage: qs-rs [-p <path> | -c <name>] [-n] [ipc (call <target> <function> [args...] | show)]";
 
 /// Resolves the shell file like quickshell: `-p` file or directory, `-c` a named config under
-/// `$XDG_CONFIG_HOME/quickshell/`, or a bare path argument.
-fn resolve_shell(path: Option<String>, name: Option<String>) -> PathBuf {
+/// `$XDG_CONFIG_HOME/quickshell/`, or a bare path argument. Returns the absolute path as given
+/// (what upstream hashes into the shell and path ids) and the real path (what gets scanned).
+fn resolve_shell(path: Option<String>, name: Option<String>) -> (PathBuf, PathBuf) {
     let candidate = match (path, name) {
         (Some(p), _) => PathBuf::from(p),
         (None, Some(n)) => {
@@ -49,7 +50,7 @@ fn resolve_shell(path: Option<String>, name: Option<String>) -> PathBuf {
     };
     let file = if candidate.is_dir() { candidate.join("shell.qml") } else { candidate };
     match std::fs::canonicalize(&file) {
-        Ok(f) => f,
+        Ok(real) => (quickshell::instance::absolute_path(&file), real),
         Err(_) => {
             eprintln!("Could not find shell file {}", file.display());
             std::process::exit(1);
@@ -57,33 +58,56 @@ fn resolve_shell(path: Option<String>, name: Option<String>) -> PathBuf {
     }
 }
 
-fn shell_id_for(root_file: &std::path::Path, pragmas: &launch::Pragmas) -> String {
-    pragmas.shell_id.clone().unwrap_or_else(|| quickshell::util::md5_hex(&qstr(root_file)).to_string())
+fn shell_id_for(config: &std::path::Path, pragmas: &launch::Pragmas) -> String {
+    pragmas.shell_id.clone().unwrap_or_else(|| quickshell::instance::path_id(&config.to_string_lossy()))
 }
 
-fn ipc_main(root_file: &std::path::Path, pragmas: &launch::Pragmas, args: &[String]) -> ! {
-    let fields: Vec<String> = match args.first().map(String::as_str) {
-        Some("call") if args.len() >= 3 => std::iter::once("call".to_string()).chain(args[1..].iter().cloned()).collect(),
-        Some("show") => vec!["show".into()],
+/// Newest live instance of this config on this display (upstream selectInstance by path).
+fn select_instance(config: &std::path::Path) -> quickshell::instance::InstanceInfo {
+    use quickshell::instance;
+    let dir = instance::base_run_dir().join("by-path").join(instance::path_id(&config.to_string_lossy()));
+    let (live, other, _) = instance::collect(&dir, &instance::display_connection());
+    match live.into_iter().next() {
+        Some(i) => i,
+        None => {
+            eprintln!("No running instances for \"{}\"", config.display());
+            if !other.is_empty() {
+                eprintln!("Found instances on other displays, use --any-display to show them.");
+            }
+            std::process::exit(255);
+        }
+    }
+}
+
+fn ipc_main(config: &std::path::Path, args: &[String]) -> ! {
+    use quickshell_io::ipc::{Command, read_call_reply, read_query_reply, request};
+    let id = select_instance(config).instance_id;
+    let result = match args.first().map(String::as_str) {
+        Some("call") if args.len() >= 3 => {
+            let n = args.len() - 3;
+            let cmd = Command::Call { target: args[1].clone(), function: args[2].clone(), args: args[3..].to_vec() };
+            request(&id, &cmd, |i, r| read_call_reply(i, r, n)).map(|r| r.map(|v| v.unwrap_or_default()))
+        }
+        Some("show") => request(&id, &Command::Query { target: String::new(), name: String::new() }, read_query_reply),
         _ => {
             eprintln!("{USAGE}");
             std::process::exit(1);
         }
     };
-    match quickshell_io::ipc::request(&shell_id_for(root_file, pragmas), &fields) {
-        Ok((0, text)) => {
+    match result {
+        Ok(Ok(text)) => {
             if !text.is_empty() {
-                println!("{}", text.trim_end_matches('\n'));
+                println!("{text}");
             }
             std::process::exit(0)
         }
-        Ok((_, text)) => {
-            eprintln!("{text}");
-            std::process::exit(1)
+        Ok(Err(msg)) => {
+            eprintln!("{msg}");
+            std::process::exit(255)
         }
         Err(e) => {
-            eprintln!("No running instance for {}: {e}", root_file.display());
-            std::process::exit(1)
+            eprintln!("Could not reach instance {id}: {e}");
+            std::process::exit(255)
         }
     }
 }
@@ -110,11 +134,12 @@ fn main() {
     cxx_qt::init_crate!(quickshell_widgets);
 
     let mut args = std::env::args().skip(1).peekable();
-    let (mut path, mut name, mut rest) = (None, None, Vec::new());
+    let (mut path, mut name, mut rest, mut no_duplicate) = (None, None, Vec::new(), false);
     while let Some(a) = args.next() {
         match a.as_str() {
             "-p" | "--path" => path = args.next(),
             "-c" | "--config" => name = args.next(),
+            "-n" | "--no-duplicate" => no_duplicate = true,
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return;
@@ -123,7 +148,7 @@ fn main() {
             _ => rest.push(a),
         }
     }
-    let root_file = resolve_shell(path, name);
+    let (config, root_file) = resolve_shell(path, name);
     let text = std::fs::read_to_string(&root_file).expect("could not read shell file");
     let pragmas = match launch::parse(&text) {
         Ok(p) => p,
@@ -133,9 +158,22 @@ fn main() {
         }
     };
     if rest.first().is_some_and(|a| a == "ipc") {
-        ipc_main(&root_file, &pragmas, &rest[1..]);
+        ipc_main(&config, &rest[1..]);
     }
-    let shell_id = shell_id_for(&root_file, &pragmas);
+    let shell_id = shell_id_for(&config, &pragmas);
+    {
+        use quickshell::instance;
+        let by_path = instance::base_run_dir().join("by-path").join(instance::path_id(&config.to_string_lossy()));
+        if no_duplicate && !instance::collect(&by_path, &instance::display_connection()).0.is_empty() {
+            eprintln!("An instance of this configuration is already running.");
+            std::process::exit(0);
+        }
+        let info = instance::new_info(&config.to_string_lossy(), &shell_id, pragmas.app_id.as_deref());
+        match instance::create(info) {
+            Ok(dir) => quickshell_io::ipc::start_server(dir),
+            Err(e) => eprintln!("Could not create the instance runtime dir: {e}"),
+        }
+    }
     let info = ShellInfo {
         shell_dir: root_file.parent().unwrap().to_path_buf(),
         data_dir: shell_dir("XDG_DATA_HOME", ".local/share", &shell_id, pragmas.data_dir.as_deref()),

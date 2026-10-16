@@ -1,9 +1,11 @@
-//! `IpcHandler` and the IPC server behind `qs-rs ipc call`. Handlers register by target; the
-//! server thread forwards each request to the handler's Qt thread and waits for the reply.
+//! `IpcHandler` and the IPC server, speaking upstream Quickshell's protocol (ipc/ipc.cpp,
+//! io/ipccomm.cpp) on `<instance dir>/ipc.sock`, so `qs -p <shell> ipc call ...` reaches qs-rs.
+//! Handlers register by target; each connection runs on its own thread, which forwards requests
+//! to the handler's Qt thread and waits for the reply.
 //!
-//! Wire format: request fields separated by NUL (`call`, target, function, args... or `show`),
-//! request ends when the client shuts down its write half. Reply: one status byte (`0` ok) then
-//! UTF-8 text.
+//! Wire format: QDataStream values back to back. A command is a variant (u8 index: 1 kill,
+//! 2 query metadata, 3 call, 4 listen to signal, 5 read property) followed by its fields; each
+//! reply is a variant of the command's response type.
 
 #[cxx_qt::bridge]
 pub mod qobject {
@@ -16,7 +18,11 @@ pub mod qobject {
         #[namespace = "qsrs_io"]
         fn ipc_call(handler: Pin<&mut IpcHandler>, name: &QString, args: &QStringList, out: &mut QString) -> i32;
         #[namespace = "qsrs_io"]
-        fn ipc_describe(handler: &IpcHandler) -> QString;
+        fn ipc_describe(handler: &IpcHandler) -> QStringList;
+        #[namespace = "qsrs_io"]
+        fn ipc_read_property(handler: &IpcHandler, name: &QString, out: &mut QString) -> bool;
+        #[namespace = "qsrs_io"]
+        fn ipc_quit();
     }
 
     extern "RustQt" {
@@ -36,18 +42,18 @@ pub mod qobject {
 use core::pin::Pin;
 use cxx_qt::{CxxQtThread, CxxQtType, Threading};
 use cxx_qt_lib::{QString, QStringList};
+use quickshell::datastream::{Incomplete, Reader, Writer};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock, mpsc};
+use std::path::Path;
+use std::sync::{Mutex, mpsc};
 
 type Thread = CxxQtThread<qobject::IpcHandler>;
 
 /// target -> (registration id, handler thread handle)
 static REGISTRY: Mutex<Option<HashMap<String, (u64, Thread)>>> = Mutex::new(None);
 static NEXT_ID: Mutex<u64> = Mutex::new(0);
-static SERVER: OnceLock<()> = OnceLock::new();
 
 pub struct IpcHandlerRust {
     enabled: bool,
@@ -79,11 +85,6 @@ fn unregister(target: &str, id: u64) {
             map.remove(target);
         }
     }
-}
-
-pub fn socket_path(shell_id: &str) -> PathBuf {
-    let base = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
-    base.join("qs-rs/by-shell").join(shell_id).join("ipc.sock")
 }
 
 impl qobject::IpcHandler {
@@ -122,20 +123,17 @@ impl qobject::IpcHandler {
             map.insert(target.clone(), (id, self.qt_thread()));
         }
         self.as_mut().rust_mut().registered = Some(target);
-        SERVER.get_or_init(start_server);
     }
 }
 
-fn start_server() {
-    let path = socket_path(&quickshell::common::shell().shell_id);
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
+/// Listens on `<instance dir>/ipc.sock` (upstream IpcServer::start, run at launch).
+pub fn start_server(instance_dir: &Path) {
+    let path = instance_dir.join("ipc.sock");
     let _ = std::fs::remove_file(&path);
     let listener = match UnixListener::bind(&path) {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("IPC: could not listen on {}: {e}", path.display());
+            eprintln!("IPC: could not start the server on {}: {e}", path.display());
             return;
         }
     };
@@ -146,56 +144,331 @@ fn start_server() {
     });
 }
 
-fn on_handler(target: &str, f: impl FnOnce(Pin<&mut qobject::IpcHandler>) -> (u8, String) + Send + 'static) -> (u8, String) {
-    let thread = REGISTRY.lock().unwrap().as_ref().and_then(|m| m.get(target).map(|(_, t)| t.clone()));
-    let Some(thread) = thread else { return (1, format!("Target {target} not found.")) };
+fn handler_thread(target: &str) -> Option<Thread> {
+    REGISTRY.lock().unwrap().as_ref().and_then(|m| m.get(target).map(|(_, t)| t.clone()))
+}
+
+/// Runs `f` on the handler's Qt thread and waits for its result; None if the target is gone.
+fn on_handler<R: Send + 'static>(target: &str, f: impl FnOnce(Pin<&mut qobject::IpcHandler>) -> R + Send + 'static) -> Option<R> {
+    let thread = handler_thread(target)?;
     let (tx, rx) = mpsc::channel();
-    if thread.queue(move |h| drop(tx.send(f(h)))).is_err() {
-        return (1, format!("Target {target} is gone."));
+    thread.queue(move |h| drop(tx.send(f(h)))).ok()?;
+    rx.recv().ok()
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct WireFunction {
+    pub name: String,
+    pub return_type: String,
+    pub arguments: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct WireTarget {
+    pub name: String,
+    pub functions: Vec<WireFunction>,
+    pub properties: Vec<(String, String)>,
+    /// (name, argument name, argument type); empty argument for signals without one.
+    pub signals: Vec<(String, String, String)>,
+}
+
+impl WireFunction {
+    fn write(&self, w: &mut Writer) {
+        w.string(&self.name).string(&self.return_type);
+        w.list(&self.arguments, |w, (n, t)| { w.string(n).string(t); });
     }
-    rx.recv().unwrap_or((1, "No reply from handler.".into()))
+    fn read(r: &mut Reader) -> Result<Self, Incomplete> {
+        Ok(Self { name: r.string()?, return_type: r.string()?, arguments: r.list(|r| Ok((r.string()?, r.string()?)))? })
+    }
+    pub fn to_text(&self) -> String {
+        let args: Vec<String> = self.arguments.iter().map(|(n, t)| format!("{n}: {t}")).collect();
+        format!("function {}({}): {}", self.name, args.join(", "), self.return_type)
+    }
+}
+
+impl WireTarget {
+    fn write(&self, w: &mut Writer) {
+        w.string(&self.name);
+        w.list(&self.functions, |w, f| f.write(w));
+        w.list(&self.properties, |w, (n, t)| { w.string(n).string(t); });
+        w.list(&self.signals, |w, (n, rn, rt)| { w.string(n).string(rn).string(rt); });
+    }
+    fn read(r: &mut Reader) -> Result<Self, Incomplete> {
+        Ok(Self {
+            name: r.string()?,
+            functions: r.list(WireFunction::read)?,
+            properties: r.list(|r| Ok((r.string()?, r.string()?)))?,
+            signals: r.list(|r| Ok((r.string()?, r.string()?, r.string()?)))?,
+        })
+    }
+    pub fn to_text(&self) -> String {
+        let mut s = format!("target {}", self.name);
+        for f in &self.functions {
+            s += &format!("\n  {}", f.to_text());
+        }
+        for (n, t) in &self.properties {
+            s += &format!("\n  property {n}: {t}");
+        }
+        for (n, rn, rt) in &self.signals {
+            s += &if rt.is_empty() { format!("\n  signal {n}()") } else { format!("\n  signal {n}({rn}: {rt})") };
+        }
+        s
+    }
+}
+
+fn describe(target: &str) -> Option<WireTarget> {
+    let name = target.to_string();
+    let lines: Vec<String> = on_handler(target, |h| qobject::ipc_describe(&h).iter().map(|l| l.to_string()).collect())?;
+    let mut def = WireTarget { name, ..Default::default() };
+    for line in lines {
+        let f: Vec<String> = line.split('\u{1f}').map(String::from).collect();
+        match f.first().map(String::as_str) {
+            Some("f") if f.len() >= 3 => def.functions.push(WireFunction {
+                name: f[1].clone(),
+                return_type: f[2].clone(),
+                arguments: f[3..].chunks(2).filter(|c| c.len() == 2).map(|c| (c[0].clone(), c[1].clone())).collect(),
+            }),
+            Some("p") if f.len() == 3 => def.properties.push((f[1].clone(), f[2].clone())),
+            Some("s") if f.len() >= 2 => def.signals.push((f[1].clone(), f.get(2).cloned().unwrap_or_default(), f.get(3).cloned().unwrap_or_default())),
+            _ => {}
+        }
+    }
+    Some(def)
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Command {
+    Kill,
+    Query { target: String, name: String },
+    Call { target: String, function: String, args: Vec<String> },
+    Listen { target: String, signal: String },
+    Property { target: String, property: String },
+}
+
+impl Command {
+    pub fn encode(&self) -> Vec<u8> {
+        let mut w = Writer::default();
+        match self {
+            Command::Kill => { w.u8(1); },
+            Command::Query { target, name } => { w.u8(2).string(target).string(name); },
+            Command::Call { target, function, args } => {
+                w.u8(3).string(target).string(function);
+                w.list(args, |w, a| { w.string(a); });
+            }
+            Command::Listen { target, signal } => { w.u8(4).string(target).string(signal); },
+            Command::Property { target, property } => { w.u8(5).string(target).string(property); },
+        }
+        w.0
+    }
+
+    /// None for an invalid (monostate or unknown) command.
+    fn decode(r: &mut Reader) -> Result<Option<Self>, Incomplete> {
+        Ok(Some(match r.u8()? {
+            1 => Command::Kill,
+            2 => Command::Query { target: r.string()?, name: r.string()? },
+            3 => Command::Call { target: r.string()?, function: r.string()?, args: r.list(|r| r.string())? },
+            4 => Command::Listen { target: r.string()?, signal: r.string()? },
+            5 => Command::Property { target: r.string()?, property: r.string()? },
+            _ => return Ok(None),
+        }))
+    }
+}
+
+// Response variant indices shared by every command: 1 not ready, 2 target not found, 3 entry
+// not found; the command's own results follow.
+const TARGET_NOT_FOUND: u8 = 2;
+const ENTRY_NOT_FOUND: u8 = 3;
+
+fn respond(cmd: Command) -> Option<Vec<u8>> {
+    let mut w = Writer::default();
+    match cmd {
+        Command::Kill => {
+            eprintln!("Exiting due to IPC request.");
+            qobject::ipc_quit();
+            return None;
+        }
+        Command::Query { target, name } => {
+            if target.is_empty() {
+                let mut targets: Vec<String> = REGISTRY.lock().unwrap().as_ref().map(|m| m.keys().cloned().collect()).unwrap_or_default();
+                targets.sort();
+                let defs: Vec<WireTarget> = targets.iter().filter_map(|t| describe(t)).collect();
+                w.u8(4).list(&defs, |w, d| d.write(w));
+            } else if let Some(def) = describe(&target) {
+                if name.is_empty() {
+                    w.u8(5);
+                    def.write(&mut w);
+                } else if let Some(f) = def.functions.iter().find(|f| f.name == name) {
+                    w.u8(6);
+                    f.write(&mut w);
+                } else if let Some((n, t)) = def.properties.iter().find(|(n, _)| *n == name) {
+                    w.u8(7).string(n).string(t);
+                } else {
+                    w.u8(ENTRY_NOT_FOUND);
+                }
+            } else {
+                w.u8(TARGET_NOT_FOUND);
+            }
+        }
+        Command::Call { target, function, args } => match describe(&target) {
+            None => { w.u8(TARGET_NOT_FOUND); },
+            Some(def) => match def.functions.into_iter().find(|f| f.name == function) {
+                None => { w.u8(ENTRY_NOT_FOUND); },
+                Some(f) if f.arguments.len() != args.len() => {
+                    w.u8(4);
+                    f.write(&mut w);
+                    w.bool(true).u8(0);
+                }
+                Some(f) => {
+                    let name = function.clone();
+                    let result = on_handler(&target, move |h| {
+                        let mut out = QString::default();
+                        let list: QStringList = args.iter().map(|a| QString::from(a.as_str())).collect();
+                        let code = qobject::ipc_call(h, &QString::from(&name), &list, &mut out);
+                        (code, out.to_string())
+                    });
+                    match result {
+                        None => { w.u8(TARGET_NOT_FOUND); },
+                        Some((0, value)) => { w.u8(5).bool(f.return_type == "void").string(&value); },
+                        Some((-1, _)) => { w.u8(ENTRY_NOT_FOUND); },
+                        Some((code, _)) => {
+                            w.u8(4);
+                            f.write(&mut w);
+                            w.bool(code == -2).u8(if code > 0 { (code - 1) as u8 } else { 0 });
+                        }
+                    }
+                }
+            },
+        },
+        Command::Property { target, property } => {
+            let result = on_handler(&target, move |h| {
+                let mut out = QString::default();
+                qobject::ipc_read_property(&h, &QString::from(&property), &mut out).then(|| out.to_string())
+            });
+            match result {
+                None => { w.u8(TARGET_NOT_FOUND); },
+                Some(None) => { w.u8(ENTRY_NOT_FOUND); },
+                Some(Some(v)) => { w.u8(4).string(&v); },
+            }
+        }
+        // Signal listening is not ported yet.
+        Command::Listen { target, .. } => drop(w.u8(if handler_thread(&target).is_some() { ENTRY_NOT_FOUND } else { TARGET_NOT_FOUND })),
+    }
+    Some(w.0)
 }
 
 fn serve(mut stream: UnixStream) {
     let mut buf = Vec::new();
-    if stream.read_to_end(&mut buf).is_err() {
-        return;
-    }
-    let fields: Vec<String> = buf.split(|b| *b == 0).map(|f| String::from_utf8_lossy(f).into_owned()).collect();
-    let (status, text) = match fields.first().map(String::as_str) {
-        Some("call") if fields.len() >= 3 => {
-            let (target, name) = (fields[1].clone(), fields[2].clone());
-            let args = fields[3..].to_vec();
-            on_handler(&target, move |h| {
-                let mut out = QString::default();
-                let list: QStringList = args.iter().map(|a| QString::from(a.as_str())).collect();
-                let code = qobject::ipc_call(h, &QString::from(&name), &list, &mut out);
-                (code as u8, out.to_string())
-            })
+    let mut chunk = [0u8; 4096];
+    loop {
+        match stream.read(&mut chunk) {
+            Ok(0) | Err(_) => return,
+            Ok(n) => buf.extend_from_slice(&chunk[..n]),
         }
-        Some("show") => {
-            let mut targets: Vec<String> = REGISTRY.lock().unwrap().as_ref().map(|m| m.keys().cloned().collect()).unwrap_or_default();
-            targets.sort();
-            let mut text = String::new();
-            for t in targets {
-                let (_, desc) = on_handler(&t.clone(), |h| (0, qobject::ipc_describe(&h).to_string()));
-                text.push_str(&format!("target {t}\n{desc}"));
+        loop {
+            let mut r = Reader::new(&buf);
+            let cmd = match Command::decode(&mut r) {
+                Err(Incomplete) => break,
+                Ok(cmd) => cmd,
+            };
+            buf.drain(..r.pos);
+            let Some(cmd) = cmd else {
+                eprintln!("IPC: received an invalid command");
+                return;
+            };
+            if let Some(reply) = respond(cmd) {
+                if stream.write_all(&reply).is_err() {
+                    return;
+                }
             }
-            (0, text)
         }
-        _ => (1, "Malformed request.".into()),
-    };
-    let _ = stream.write_all(&[status]);
-    let _ = stream.write_all(text.as_bytes());
+    }
 }
 
-/// Client side, used by the `ipc` subcommand. Returns the status byte and reply text.
-pub fn request(shell_id: &str, fields: &[String]) -> std::io::Result<(u8, String)> {
-    let mut stream = UnixStream::connect(socket_path(shell_id))?;
-    stream.write_all(fields.join("\0").as_bytes())?;
-    stream.shutdown(std::net::Shutdown::Write)?;
+/// Client side (`qs-rs ipc ...`): sends one command to an instance and reads one reply with
+/// `read`, which gets the reply's variant index and the rest of the bytes.
+pub fn request<T>(instance_id: &str, cmd: &Command, read: impl Fn(u8, &mut Reader) -> Result<T, Incomplete>) -> std::io::Result<T> {
+    let mut stream = UnixStream::connect(quickshell::instance::ipc_path(instance_id))?;
+    stream.write_all(&cmd.encode())?;
     let mut buf = Vec::new();
-    stream.read_to_end(&mut buf)?;
-    let status = buf.first().copied().unwrap_or(1);
-    Ok((status, String::from_utf8_lossy(buf.get(1..).unwrap_or_default()).into_owned()))
+    let mut chunk = [0u8; 4096];
+    loop {
+        let n = stream.read(&mut chunk)?;
+        if n == 0 {
+            return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "connection closed"));
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        let mut r = Reader::new(&buf);
+        if let Ok(v) = r.u8().and_then(|i| read(i, &mut r)) {
+            return Ok(v);
+        }
+    }
+}
+
+/// Reads a call reply: Ok(Some(text)) for a value, Ok(None) for void, Err(message) otherwise.
+pub fn read_call_reply(index: u8, r: &mut Reader, args: usize) -> Result<Result<Option<String>, String>, Incomplete> {
+    Ok(match index {
+        5 => {
+            let is_void = r.bool()?;
+            let value = r.string()?;
+            Ok((!is_void).then_some(value))
+        }
+        4 => {
+            let def = WireFunction::read(r)?;
+            let count = r.bool()?;
+            let i = r.u8()? as usize;
+            let msg = if count {
+                let n = def.arguments.len();
+                format!("Too {} arguments provided ({n} required but {args} were provided.)", if n < args { "many" } else { "few" })
+            } else {
+                format!("Unable to parse argument {} as {}.", i + 1, def.arguments.get(i).map(|a| a.1.as_str()).unwrap_or("?"))
+            };
+            Err(format!("{msg}\nFunction definition: {}", def.to_text()))
+        }
+        TARGET_NOT_FOUND => Err("Target not found.".into()),
+        ENTRY_NOT_FOUND => Err("Function not found.".into()),
+        1 => Err("Not ready to accept queries yet.".into()),
+        _ => Err("Received invalid IPC response.".into()),
+    })
+}
+
+/// Reads a query reply as text (`ipc show`).
+pub fn read_query_reply(index: u8, r: &mut Reader) -> Result<Result<String, String>, Incomplete> {
+    Ok(match index {
+        4 => Ok(r.list(WireTarget::read)?.iter().map(WireTarget::to_text).collect::<Vec<_>>().join("\n")),
+        5 => Ok(WireTarget::read(r)?.to_text()),
+        6 => Ok(WireFunction::read(r)?.to_text()),
+        7 => Ok(format!("property {}: {}", r.string()?, r.string()?)),
+        TARGET_NOT_FOUND => Err("Target not found.".into()),
+        ENTRY_NOT_FOUND => Err("Function not found.".into()),
+        1 => Err("Not ready to accept queries yet.".into()),
+        _ => Err("Received invalid IPC response.".into()),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn call_command_bytes() {
+        let cmd = Command::Call { target: "t".into(), function: "f".into(), args: vec!["a".into()] };
+        let bytes = cmd.encode();
+        assert_eq!(bytes, [3, 0, 0, 0, 2, 0, b't', 0, 0, 0, 2, 0, b'f', 0, 0, 0, 1, 0, 0, 0, 2, 0, b'a']);
+        assert_eq!(Command::decode(&mut Reader::new(&bytes)), Ok(Some(cmd)));
+        assert_eq!(Command::decode(&mut Reader::new(&bytes[..bytes.len() - 1])), Err(Incomplete));
+    }
+
+    #[test]
+    fn target_round_trips() {
+        let def = WireTarget {
+            name: "iris".into(),
+            functions: vec![WireFunction { name: "toggle".into(), return_type: "void".into(), arguments: vec![("x".into(), "int".into())] }],
+            properties: vec![("open".into(), "bool".into())],
+            signals: vec![("opened".into(), String::new(), String::new())],
+        };
+        let mut w = Writer::default();
+        def.write(&mut w);
+        assert_eq!(WireTarget::read(&mut Reader::new(&w.0)).unwrap(), def);
+        assert_eq!(def.to_text(), "target iris\n  function toggle(x: int): void\n  property open: bool\n  signal opened()");
+    }
 }
