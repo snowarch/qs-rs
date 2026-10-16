@@ -25,6 +25,37 @@ fn runtime_dir() -> PathBuf {
     base.join("qs-rs")
 }
 
+/// jemalloc's defaults when `MALLOC_CONF` is unset: inir's tuning (two arenas, 1 s dirty decay,
+/// a background purge thread) so freed memory goes back to the system instead of staying in
+/// per-core arenas.
+#[repr(transparent)]
+pub struct MallocConf(*const u8);
+unsafe impl Sync for MallocConf {}
+#[unsafe(no_mangle)]
+#[used]
+pub static malloc_conf: MallocConf =
+    MallocConf(c"background_thread:true,narenas:2,dirty_decay_ms:1000,muzzy_decay_ms:0,tcache_max:4096".as_ptr().cast());
+
+unsafe extern "C" {
+    fn mallctl(name: *const std::ffi::c_char, old: *mut u8, oldlen: *mut usize, new: *mut u8, newlen: usize) -> i32;
+}
+
+/// Bytes jemalloc holds for live allocations and as resident pages (`stats.allocated`,
+/// `stats.resident`), refreshed through `epoch`.
+pub fn malloc_stats() -> Option<(usize, usize)> {
+    unsafe {
+        let mut epoch: u64 = 1;
+        let mut len = size_of::<u64>();
+        mallctl(c"epoch".as_ptr(), std::ptr::null_mut(), std::ptr::null_mut(), (&raw mut epoch).cast(), len);
+        let mut read = |name: &std::ffi::CStr| {
+            let mut v: usize = 0;
+            len = size_of::<usize>();
+            (mallctl(name.as_ptr(), (&raw mut v).cast(), &mut len, std::ptr::null_mut(), 0) == 0).then_some(v)
+        };
+        Some((read(c"stats.allocated")?, read(c"stats.resident")?))
+    }
+}
+
 /// Private VFS dirs (`vfs-<pid>`) left behind by instances that were killed.
 fn clean_stale_vfs() {
     for entry in std::fs::read_dir(runtime_dir()).into_iter().flatten().flatten() {
@@ -124,6 +155,7 @@ fn ipc_main(config: &std::path::Path, args: &[String]) -> ! {
 }
 
 fn main() {
+    let started = std::time::Instant::now();
     // PamContext re-executes qs-rs as its authentication helper process.
     let argv: Vec<String> = std::env::args().collect();
     if argv.get(1).map(String::as_str) == Some(quickshell_services_pam::helper::HELPER_ARG) {
@@ -216,6 +248,15 @@ fn main() {
     let mut app = host::ffi::create_app(pragmas.use_qapplication, pragmas.desktop_settings_aware);
     let engine = host::ffi::new_engine(&qstr(&vfs_root));
     let root = unsafe { host::ffi::create_root(std::pin::Pin::new_unchecked(&mut *engine), &qstr(&entry)) };
+    if !root.is_null() {
+        let (alloc, resident) = malloc_stats().unwrap_or_default();
+        eprintln!(
+            "Configuration loaded in {} ms ({} MB allocated, {} MB resident)",
+            started.elapsed().as_millis(),
+            alloc >> 20,
+            resident >> 20
+        );
+    }
     let code = if root.is_null() { 1 } else { host::ffi::exec_app(app.pin_mut()) };
     if _vfs_lock.is_none() {
         let _ = std::fs::remove_dir_all(&vfs_root);
