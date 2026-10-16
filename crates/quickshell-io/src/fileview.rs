@@ -196,7 +196,7 @@ pub struct FileViewRust {
     write_data: Option<Vec<u8>>,
     live: Option<Op>,
     next_id: u64,
-    watcher: Option<notify::RecommendedWatcher>,
+    watcher: Option<crate::watch::Subscription>,
 }
 
 impl Default for FileViewRust {
@@ -597,24 +597,11 @@ impl qobject::FileViewInternal {
         if self.target_path.is_empty() || !self.watch_changes {
             return;
         }
-        use notify::{RecursiveMode, Watcher};
-        let target = std::path::PathBuf::from(&self.target_path);
         let qt = self.qt_thread();
-        let watched = target.clone();
-        let watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-            let Ok(event) = res else { return };
-            if event.kind.is_access() || !event.paths.iter().any(|p| p == &watched) {
-                return;
-            }
+        let sub = crate::watch::subscribe(Path::new(&self.target_path), move || {
             let _ = qt.queue(|this| this.file_changed());
         });
-        if let Ok(mut w) = watcher {
-            // Watch the directory so creation and atomic replacement of the file are seen too.
-            let dir = target.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
-            if w.watch(dir, RecursiveMode::NonRecursive).is_ok() {
-                self.as_mut().rust_mut().watcher = Some(w);
-            }
-        }
+        self.as_mut().rust_mut().watcher = sub;
     }
 }
 
