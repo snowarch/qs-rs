@@ -11,6 +11,9 @@
 #include <QtCore/QLibraryInfo>
 #include <QtCore/QTimer>
 #include <cstdio>
+#include <csignal>
+#include <execinfo.h>
+#include <unistd.h>
 #include <QtQuick/QQuickItem>
 #include <QtQuick/QQuickWindow>
 #include <QtQml/QQmlContext>
@@ -22,6 +25,26 @@
 #include "quickshell/include/reload.h"
 
 namespace qsrs {
+// Fatal signals print a native backtrace to stderr (the journal under inir.service), then
+// re-raise so the exit status and coredump stay the same. Cores of a 600 MB shell exceed
+// systemd-coredump's default size limits, so this is often the only trace of a live crash.
+inline void crash_handler(int sig) {
+	char head[64];
+	int n = snprintf(head, sizeof head, "qs-rs: fatal signal %d, backtrace:\n", sig);
+	if (n > 0) (void)!write(STDERR_FILENO, head, size_t(n));
+	void* frames[64];
+	backtrace_symbols_fd(frames, backtrace(frames, 64), STDERR_FILENO);
+	signal(sig, SIG_DFL);
+	raise(sig);
+}
+
+inline void install_crash_handler() {
+	// backtrace() loads libgcc lazily: do it now, not inside the handler.
+	void* warm[1];
+	backtrace(warm, 1);
+	for (int sig: {SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGABRT}) signal(sig, crash_handler);
+}
+
 inline rust::String qt_plugins_path() {
 	return rust::String(QLibraryInfo::path(QLibraryInfo::PluginsPath).toStdString());
 }

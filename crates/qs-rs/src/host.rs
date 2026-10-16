@@ -14,6 +14,7 @@ pub mod ffi {
         type QObject = cxx_qt::QObject;
 
         fn install_message_handler();
+        fn install_crash_handler();
         fn qt_plugins_path() -> String;
         fn set_plugin_path(path: &QString);
         fn create_app(use_qapplication: bool, desktop_settings_aware: bool) -> UniquePtr<QGuiApplication>;

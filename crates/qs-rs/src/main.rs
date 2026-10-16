@@ -329,6 +329,7 @@ fn main() {
         log_main(config.as_deref(), &rest[1..], color, log_times);
     }
     host::ffi::install_message_handler();
+    host::ffi::install_crash_handler();
     let (config, root_file) = resolve_shell(path, name);
     let text = std::fs::read_to_string(&root_file).expect("could not read shell file");
     let pragmas = match launch::parse(&text) {
