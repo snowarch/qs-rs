@@ -146,6 +146,29 @@ inline bool ipc_read_property(const T& handler, const QString& name, QString& ou
 	return false;
 }
 
+// Forwards every IPC signal (at most one argument) to the handler's `_qsSignal(name, value,
+// void)` through the JS engine, so no moc'd relay is needed. Done once, on the first listener.
+template <typename T>
+inline void ipc_connect_signals(T& handler) {
+	auto* engine = qmlEngine(&handler);
+	if (!engine) return;
+	auto self = engine->toScriptValue(static_cast<QObject*>(&handler));
+	auto make = engine->evaluate(QStringLiteral(
+	    "(function(h, n, arg) { return arg ? function(v) { h._qsSignal(n, v, false) }"
+	    " : function() { h._qsSignal(n, undefined, true) } })"));
+	auto* mo = handler.metaObject();
+	for (auto i = ipcBase(handler)->methodCount(); i < mo->methodCount(); i++) {
+		auto m = mo->method(i);
+		if (m.methodType() != QMetaMethod::Signal || m.parameterCount() > 1 || m.name().startsWith("_")) continue;
+		auto name = QString::fromLatin1(m.name());
+		auto fn = make.call({self, QJSValue(name), QJSValue(m.parameterCount() == 1)});
+		auto sig = self.property(name);
+		sig.property("connect").callWithInstance(sig, {fn});
+	}
+}
+
+inline QString ipc_value_string(const QVariant& v) { return valueString(v); }
+
 // IPC kill (upstream IpcKillCommand): quit the event loop from any thread.
 inline void ipc_quit() { QMetaObject::invokeMethod(QCoreApplication::instance(), &QCoreApplication::quit, Qt::QueuedConnection); }
 

@@ -14,6 +14,8 @@ pub mod qobject {
         type QString = cxx_qt_lib::QString;
         include!("cxx-qt-lib/qstringlist.h");
         type QStringList = cxx_qt_lib::QStringList;
+        include!("cxx-qt-lib/qvariant.h");
+        type QVariant = cxx_qt_lib::QVariant;
         include!("quickshell_io/include/ipcmeta.h");
         #[namespace = "qsrs_io"]
         fn ipc_call(handler: Pin<&mut IpcHandler>, name: &QString, args: &QStringList, out: &mut QString) -> i32;
@@ -23,6 +25,10 @@ pub mod qobject {
         fn ipc_read_property(handler: &IpcHandler, name: &QString, out: &mut QString) -> bool;
         #[namespace = "qsrs_io"]
         fn ipc_quit();
+        #[namespace = "qsrs_io"]
+        fn ipc_connect_signals(handler: Pin<&mut IpcHandler>);
+        #[namespace = "qsrs_io"]
+        fn ipc_value_string(value: &QVariant) -> QString;
     }
 
     extern "RustQt" {
@@ -34,6 +40,10 @@ pub mod qobject {
 
         fn set_enabled(self: Pin<&mut IpcHandler>, enabled: bool);
         fn set_target(self: Pin<&mut IpcHandler>, target: QString);
+        /// Called from the JS closures ipc_connect_signals attaches to each signal.
+        #[qinvokable]
+        #[cxx_name = "_qsSignal"]
+        fn signal_fired(self: &IpcHandler, name: &QString, value: &QVariant, is_void: bool);
     }
 
     impl cxx_qt::Threading for IpcHandler {}
@@ -41,7 +51,7 @@ pub mod qobject {
 
 use core::pin::Pin;
 use cxx_qt::{CxxQtThread, CxxQtType, Threading};
-use cxx_qt_lib::{QString, QStringList};
+use cxx_qt_lib::{QString, QStringList, QVariant};
 use quickshell::datastream::{Incomplete, Reader, Writer};
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -60,13 +70,14 @@ pub struct IpcHandlerRust {
     target: QString,
     id: u64,
     registered: Option<String>,
+    signals_connected: bool,
 }
 
 impl Default for IpcHandlerRust {
     fn default() -> Self {
         let mut n = NEXT_ID.lock().unwrap();
         *n += 1;
-        Self { enabled: true, target: QString::default(), id: *n, registered: None }
+        Self { enabled: true, target: QString::default(), id: *n, registered: None, signals_connected: false }
     }
 }
 
@@ -124,6 +135,47 @@ impl qobject::IpcHandler {
         }
         self.as_mut().rust_mut().registered = Some(target);
     }
+}
+
+/// Remote `ipc listen`/`ipc wait` clients: (connection, target, signal, writer queue).
+static LISTENERS: Mutex<Vec<(u64, String, String, mpsc::Sender<String>)>> = Mutex::new(Vec::new());
+
+impl qobject::IpcHandler {
+    fn signal_fired(&self, name: &QString, value: &QVariant, is_void: bool) {
+        let Some(target) = self.registered.as_deref() else { return };
+        let value = if is_void { "void".to_string() } else { qobject::ipc_value_string(value).to_string() };
+        let name = name.to_string();
+        LISTENERS.lock().unwrap().retain(|(_, t, s, tx)| t != target || *s != name || tx.send(value.clone()).is_ok());
+    }
+}
+
+/// Upstream SignalListenCommand::exec: checks the target and signal, then streams one
+/// SignalResponse (variant 4) per emission until the client hangs up.
+fn listen(conn: u64, stream: &UnixStream, target: String, signal: String) -> Option<Vec<u8>> {
+    let mut w = Writer::default();
+    let Some(def) = describe(&target) else { return Some(w.u8(TARGET_NOT_FOUND).0.clone()) };
+    if !def.signals.iter().any(|(n, _, _)| *n == signal) {
+        return Some(w.u8(ENTRY_NOT_FOUND).0.clone());
+    }
+    on_handler(&target, |mut h| {
+        if !h.signals_connected {
+            h.as_mut().rust_mut().signals_connected = true;
+            qobject::ipc_connect_signals(h);
+        }
+    })?;
+    let (tx, rx) = mpsc::channel::<String>();
+    let mut out = stream.try_clone().ok()?;
+    LISTENERS.lock().unwrap().push((conn, target, signal, tx));
+    std::thread::spawn(move || {
+        for value in rx {
+            let mut w = Writer::default();
+            w.u8(4).string(&value);
+            if out.write_all(&w.0).is_err() {
+                return;
+            }
+        }
+    });
+    None
 }
 
 /// Listens on `<instance dir>/ipc.sock` (upstream IpcServer::start, run at launch).
@@ -350,13 +402,19 @@ fn respond(cmd: Command) -> Option<Vec<u8>> {
                 Some(Some(v)) => { w.u8(4).string(&v); },
             }
         }
-        // Signal listening is not ported yet.
-        Command::Listen { target, .. } => drop(w.u8(if handler_thread(&target).is_some() { ENTRY_NOT_FOUND } else { TARGET_NOT_FOUND })),
+        Command::Listen { .. } => unreachable!("served by listen()"),
     }
     Some(w.0)
 }
 
 fn serve(mut stream: UnixStream) {
+    static NEXT_CONN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let conn = NEXT_CONN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    serve_commands(conn, &mut stream);
+    LISTENERS.lock().unwrap().retain(|(c, ..)| *c != conn);
+}
+
+fn serve_commands(conn: u64, stream: &mut UnixStream) {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
     loop {
@@ -375,7 +433,11 @@ fn serve(mut stream: UnixStream) {
                 quickshell::qs_log!(warn, "quickshell.ipc", "received an invalid command");
                 return;
             };
-            if let Some(reply) = respond(cmd) {
+            let reply = match cmd {
+                Command::Listen { target, signal } => listen(conn, stream, target, signal),
+                cmd => respond(cmd),
+            };
+            if let Some(reply) = reply {
                 if stream.write_all(&reply).is_err() {
                     return;
                 }
