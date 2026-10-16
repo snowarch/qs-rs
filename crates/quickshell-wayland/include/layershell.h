@@ -80,3 +80,26 @@ private:
 	QString mNamespace = "quickshell";
 	WlrKeyboardFocus::Enum mFocus = WlrKeyboardFocus::None;
 };
+
+#include <LayerShellQt/Window>
+#include <QtGui/QWindow>
+
+// Applies PanelWindow's layer surface configuration to its backing window through LayerShellQt.
+class QsLayerShell: public QObject {
+	Q_OBJECT;
+	QML_ELEMENT;
+	QML_SINGLETON;
+
+public:
+	Q_INVOKABLE void configure(QWindow* window, int anchors, int layer, int keyboard, int exclusiveZone, int left, int top, int right, int bottom, const QString& scope) {
+		if (!window) return;
+		auto* ls = LayerShellQt::Window::get(window);
+		ls->setAnchors(LayerShellQt::Window::Anchors(anchors));
+		ls->setLayer(LayerShellQt::Window::Layer(layer));
+		ls->setKeyboardInteractivity(LayerShellQt::Window::KeyboardInteractivity(keyboard));
+		ls->setExclusiveZone(exclusiveZone);
+		ls->setMargins(QMargins(left, top, right, bottom));
+		ls->setScope(scope);
+		ls->setActivateOnShow(keyboard != 0);
+	}
+};
