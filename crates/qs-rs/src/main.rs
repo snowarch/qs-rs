@@ -1,6 +1,7 @@
 extern crate quickshell;
 extern crate quickshell_io;
 extern crate quickshell_wayland;
+extern crate quickshell_hyprland;
 
 mod host;
 mod launch;
@@ -83,6 +84,7 @@ fn main() {
     cxx_qt::init_crate!(quickshell);
     cxx_qt::init_crate!(quickshell_io);
     cxx_qt::init_crate!(quickshell_wayland);
+    cxx_qt::init_crate!(quickshell_hyprland);
 
     let mut args = std::env::args().skip(1).peekable();
     let (mut path, mut name, mut rest) = (None, None, Vec::new());

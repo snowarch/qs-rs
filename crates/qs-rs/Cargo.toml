@@ -10,6 +10,7 @@ cxx-qt-lib.workspace = true
 quickshell = { path = "../quickshell" }
 quickshell_io = { path = "../quickshell-io" }
 quickshell_wayland = { path = "../quickshell-wayland" }
+quickshell_hyprland = { path = "../quickshell-hyprland" }
 
 [build-dependencies]
 cxx-qt-build.workspace = true

@@ -451,6 +451,7 @@ dependencies = [
  "cxx-qt-build",
  "cxx-qt-lib",
  "quickshell",
+ "quickshell_hyprland",
  "quickshell_io",
  "quickshell_wayland",
 ]
@@ -478,6 +479,17 @@ dependencies = [
  "cxx-qt-build",
  "cxx-qt-lib",
  "libc",
+]
+
+[[package]]
+name = "quickshell_hyprland"
+version = "0.1.0"
+dependencies = [
+ "cxx",
+ "cxx-qt",
+ "cxx-qt-build",
+ "cxx-qt-lib",
+ "quickshell",
 ]
 
 [[package]]

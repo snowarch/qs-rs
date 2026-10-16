@@ -4,6 +4,7 @@
 #include <QtCore/QVariant>
 #include <QtGui/QColor>
 #include <QtGui/QIcon>
+#include <QtGui/QImage>
 #include <QtGui/QPainter>
 #include <QtGui/QPixmap>
 #include <QtQml/QQmlEngine>
@@ -58,5 +59,23 @@ public:
 
 inline void install_image_providers(QQmlEngine& engine) {
 	engine.addImageProvider("icon", new IconImageProvider());
+}
+// ARGB pixels of an image file, optionally cropped and downscaled (keeping aspect) so neither side
+// exceeds `rescale`. Reentrant: safe to call from worker threads.
+inline rust::Vec<uint32_t> load_pixels(const QString& path, int32_t x, int32_t y, int32_t w, int32_t h, double rescale) {
+	rust::Vec<uint32_t> out;
+	auto image = QImage(path);
+	if (image.isNull()) return out;
+	if (w > 0 && h > 0) image = image.copy(x, y, w, h);
+	if (rescale > 0 && (image.width() > rescale || image.height() > rescale)) {
+		image = image.scaled(int(rescale), int(rescale), Qt::KeepAspectRatio, Qt::SmoothTransformation);
+	}
+	image = image.convertToFormat(QImage::Format_ARGB32);
+	out.reserve(size_t(image.width()) * image.height());
+	for (int iy = 0; iy < image.height(); iy++) {
+		auto* line = reinterpret_cast<const QRgb*>(image.constScanLine(iy));
+		for (int ix = 0; ix < image.width(); ix++) out.push_back(line[ix]);
+	}
+	return out;
 }
 } // namespace qsrs

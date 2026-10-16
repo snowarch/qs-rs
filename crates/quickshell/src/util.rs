@@ -17,6 +17,8 @@ mod ffi {
         #[namespace = "qsrs"]
         fn qt_version() -> QString;
         #[namespace = "qsrs"]
+        fn load_pixels(path: &QString, x: i32, y: i32, w: i32, h: i32, rescale: f64) -> Vec<u32>;
+        #[namespace = "qsrs"]
         fn md5_hex(s: &QString) -> QString;
         #[namespace = "qsrs"]
         fn has_theme_icon(name: &QString) -> bool;
@@ -26,4 +28,4 @@ mod ffi {
     }
 }
 
-pub use ffi::{has_theme_icon, install_image_providers, md5_hex, null_variant, qt_version};
+pub use ffi::{has_theme_icon, install_image_providers, load_pixels, md5_hex, null_variant, qt_version};

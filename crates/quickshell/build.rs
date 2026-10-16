@@ -10,7 +10,7 @@ fn main() {
     .qt_module("Quick")
     .cpp_file("include/window.h")
     .cpp_file("include/clipboard.h")
-    .files(["src/global.rs", "src/util.rs"])
+    .files(["src/global.rs", "src/util.rs", "src/colorquantizer.rs"])
     .build()
     .export();
 }
