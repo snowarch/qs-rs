@@ -1,6 +1,7 @@
-//! D-Bus helpers shared by the service modules. Services run zbus' blocking API on their own
-//! threads and hand values to QML as JSON text, which keeps nested D-Bus types (arrays of
-//! dicts, structs) intact without wrapping each one in a QVariant.
+//! D-Bus helpers shared by the service modules. Every service runs as a task on the one D-Bus
+//! thread (`rt`) over the shared connection of its bus, and hands values to QML as JSON text,
+//! which keeps nested D-Bus types (arrays of dicts, structs) intact without wrapping each one in
+//! a QVariant.
 
 pub use zbus;
 use zbus::zvariant::Value;
@@ -114,6 +115,7 @@ mod tests {
 
 pub mod object_manager;
 pub mod pixmap;
+pub mod rt;
 
 /// A property value to write, typed the way the remote interface declares it.
 pub enum SetValue {
@@ -123,84 +125,112 @@ pub enum SetValue {
     Str(String),
 }
 
-/// org.freedesktop.DBus.Properties.Set, blocking.
-pub fn set_property(conn: &zbus::blocking::Connection, service: &str, path: &str, iface: &str, name: &str, value: SetValue) -> zbus::Result<()> {
-    let proxy = zbus::blocking::Proxy::new(conn, service.to_string(), path.to_string(), "org.freedesktop.DBus.Properties")?;
+/// org.freedesktop.DBus.Properties.Set.
+pub async fn set_property(conn: &zbus::Connection, service: &str, path: &str, iface: &str, name: &str, value: SetValue) -> zbus::Result<()> {
+    let proxy = zbus::Proxy::new(conn, service.to_string(), path.to_string(), "org.freedesktop.DBus.Properties").await?;
     let value = match value {
         SetValue::Bool(b) => Value::Bool(b),
         SetValue::U32(u) => Value::U32(u),
         SetValue::F64(f) => Value::F64(f),
         SetValue::Str(s) => Value::from(s),
     };
-    proxy.call("Set", &(iface, name, value))
+    proxy.call("Set", &(iface, name, value)).await
 }
 
 /// Calls a method with no arguments, or with one object path argument.
-pub fn call(conn: &zbus::blocking::Connection, service: &str, path: &str, iface: &str, method: &str, object_arg: Option<&str>) -> zbus::Result<()> {
-    let proxy = zbus::blocking::Proxy::new(conn, service.to_string(), path.to_string(), iface.to_string())?;
+pub async fn call(conn: &zbus::Connection, service: &str, path: &str, iface: &str, method: &str, object_arg: Option<&str>) -> zbus::Result<()> {
+    let proxy = zbus::Proxy::new(conn, service.to_string(), path.to_string(), iface.to_string()).await?;
     match object_arg {
-        Some(p) => proxy.call(method, &(zbus::zvariant::ObjectPath::try_from(p)?,)),
-        None => proxy.call(method, &()),
+        Some(p) => proxy.call(method, &(zbus::zvariant::ObjectPath::try_from(p)?,)).await,
+        None => proxy.call(method, &()).await,
     }
 }
 
-type Job = Box<dyn FnOnce(&zbus::blocking::Connection) + Send>;
+/// org.freedesktop.DBus.Properties.GetAll.
+pub async fn get_all(conn: &zbus::Connection, service: &str, path: &str, iface: &str) -> zbus::Result<std::collections::HashMap<String, zbus::zvariant::OwnedValue>> {
+    let proxy = zbus::Proxy::new(conn, service.to_string(), path.to_string(), "org.freedesktop.DBus.Properties").await?;
+    proxy.call("GetAll", &(iface,)).await
+}
 
-/// Runs bus calls in the order they were requested, on one thread, so a quick play then pause
-/// can't reach the remote side swapped.
-pub struct Worker(std::sync::mpsc::Sender<Job>);
+/// Which shared connection a service talks over.
+#[derive(Clone, Copy)]
+pub enum Bus {
+    Session,
+    System,
+}
+
+impl Bus {
+    pub async fn connect(self) -> zbus::Result<zbus::Connection> {
+        match self {
+            Bus::Session => rt::session().await,
+            Bus::System => rt::system().await,
+        }
+    }
+}
+
+type Job = Box<dyn FnOnce(zbus::Connection) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send>;
+
+/// Runs bus calls in the order they were requested (one task on the D-Bus thread), so a quick
+/// play then pause can't reach the remote side swapped. Calls queued before the bus connects
+/// run once it does.
+pub struct Worker(rt::Sender<Job>);
 
 impl Worker {
-    pub fn new(conn: zbus::blocking::Connection, name: &str) -> Self {
-        let (tx, rx) = std::sync::mpsc::channel::<Job>();
-        std::thread::Builder::new()
-            .name(name.into())
-            .spawn(move || {
-                for job in rx {
-                    job(&conn);
-                }
-            })
-            .expect("spawn dbus worker");
+    pub fn new(bus: Bus, who: &'static str) -> Self {
+        let (tx, mut rx) = rt::channel::<Job>();
+        rt::spawn(async move {
+            let conn = match bus.connect().await {
+                Ok(c) => c,
+                Err(e) => return eprintln!("{who}: {e}"),
+            };
+            while let Some(job) = rx.recv().await {
+                job(conn.clone()).await;
+            }
+        });
         Self(tx)
     }
 
     /// Queues `f`; an error is logged as "`what` failed".
-    pub fn run(&self, what: String, f: impl FnOnce(&zbus::blocking::Connection) -> zbus::Result<()> + Send + 'static) {
-        let _ = self.0.send(Box::new(move |conn| {
-            if let Err(e) = f(conn) {
-                eprintln!("{what} failed: {e}");
-            }
+    pub fn run<F>(&self, what: String, f: impl FnOnce(zbus::Connection) -> F + Send + 'static)
+    where
+        F: std::future::Future<Output = zbus::Result<()>> + Send + 'static,
+    {
+        self.0.send(Box::new(move |conn| {
+            Box::pin(async move {
+                if let Err(e) = f(conn).await {
+                    eprintln!("{what} failed: {e}");
+                }
+            })
         }));
     }
 }
 
 /// Owns `name` without queueing (like QDBusConnection::registerService) and claims it again each
-/// time its owner goes away. Blocks for the life of the connection.
-pub fn claim_name(conn: &zbus::blocking::Connection, name: &str, who: &str) -> zbus::Result<()> {
+/// time its owner goes away. Runs for the life of the connection.
+pub async fn claim_name(conn: &zbus::Connection, name: &str, who: &str) -> zbus::Result<()> {
     use zbus::fdo::RequestNameFlags;
-    let changes = name_owner_changes(conn, name)?;
-    let try_claim = || match conn.request_name_with_flags(name, RequestNameFlags::DoNotQueue.into()) {
-        Ok(_) => eprintln!("{who}: registered {name}"),
-        Err(zbus::Error::NameTaken) => {
-            eprintln!("{who}: {name} is owned by another service; registration will be retried when it goes away")
+    let mut changes = name_owner_changes(conn, name).await?;
+    let try_claim = || async {
+        match conn.request_name_with_flags(name, RequestNameFlags::DoNotQueue.into()).await {
+            Ok(_) => eprintln!("{who}: registered {name}"),
+            Err(zbus::Error::NameTaken) => {
+                eprintln!("{who}: {name} is owned by another service; registration will be retried when it goes away")
+            }
+            Err(e) => eprintln!("{who}: cannot register {name}: {e}"),
         }
-        Err(e) => eprintln!("{who}: cannot register {name}: {e}"),
     };
-    try_claim();
-    for (_, _, new) in changes {
-        if new.is_empty() {
-            try_claim();
+    try_claim().await;
+    while let Some(msg) = rt::next(&mut changes).await {
+        if owner_change(&msg?).is_some_and(|(_, _, new)| new.is_empty()) {
+            try_claim().await;
         }
     }
     Ok(())
 }
 
-/// NameOwnerChanged signals as `(name, old_owner, new_owner)`, for one name or (empty `name`)
-/// for all of them.
-pub fn name_owner_changes(
-    conn: &zbus::blocking::Connection,
-    name: &str,
-) -> zbus::Result<impl Iterator<Item = (String, String, String)> + use<>> {
+/// NameOwnerChanged signals for one name or (empty `name`) for all of them; read each with
+/// `owner_change`.
+pub async fn name_owner_changes(conn: &zbus::Connection, name: &str) -> zbus::Result<zbus::MessageStream> {
     let mut rule = zbus::MatchRule::builder()
         .msg_type(zbus::message::Type::Signal)
         .sender("org.freedesktop.DBus")?
@@ -209,6 +239,20 @@ pub fn name_owner_changes(
     if !name.is_empty() {
         rule = rule.arg(0, name.to_string())?;
     }
-    let it = zbus::blocking::MessageIterator::for_match_rule(rule.build(), conn, None)?;
-    Ok(it.flatten().filter_map(|m| m.body().deserialize::<(String, String, String)>().ok()))
+    signals(conn, rule.build()).await
+}
+
+/// `(name, old_owner, new_owner)` of a NameOwnerChanged signal.
+pub fn owner_change(msg: &zbus::Message) -> Option<(String, String, String)> {
+    msg.body().deserialize::<(String, String, String)>().ok()
+}
+
+/// Every message matching `rule`.
+pub async fn signals(conn: &zbus::Connection, rule: zbus::MatchRule<'static>) -> zbus::Result<zbus::MessageStream> {
+    zbus::MessageStream::for_match_rule(rule, conn, None).await
+}
+
+/// Every signal from `sender`.
+pub async fn signals_from(conn: &zbus::Connection, sender: &str) -> zbus::Result<zbus::MessageStream> {
+    signals(conn, zbus::MatchRule::builder().msg_type(zbus::message::Type::Signal).sender(sender.to_string())?.build()).await
 }

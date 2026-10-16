@@ -59,10 +59,11 @@ pub mod qobject {
 use core::pin::Pin;
 use cxx_qt::{CxxQtThread, Threading};
 use cxx_qt_lib::QString;
-use qs_dbus::zbus::{self, blocking::Connection, blocking::MessageIterator, blocking::Proxy, message::Type, MatchRule};
-use qs_dbus::{props_json, SetValue};
+use qs_dbus::rt::{next, spawn};
+use qs_dbus::zbus::{self, message::Type, Connection, MatchRule, Proxy};
+use qs_dbus::{get_all, props_json, signals, Bus, SetValue};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use zbus::zvariant::{ObjectPath, OwnedValue};
 
 const PREFIX: &str = "org.mpris.MediaPlayer2";
@@ -71,9 +72,14 @@ const IFACES: [&str; 2] = ["org.mpris.MediaPlayer2", "org.mpris.MediaPlayer2.Pla
 
 type Qt = CxxQtThread<qobject::MprisCore>;
 
-#[derive(Default)]
 pub struct MprisCoreRust {
-    worker: Arc<OnceLock<qs_dbus::Worker>>,
+    worker: qs_dbus::Worker,
+}
+
+impl Default for MprisCoreRust {
+    fn default() -> Self {
+        Self { worker: qs_dbus::Worker::new(Bus::Session, "Mpris") }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -92,12 +98,10 @@ fn emit_props(qt: &Qt, name: &str, iface: &str, props: &HashMap<String, OwnedVal
 
 /// GetAll of both interfaces for a newly seen player.
 fn add_player(conn: Connection, qt: Qt, owners: Owners, name: String, unique: String) {
-    std::thread::spawn(move || {
-        owners.0.lock().unwrap().insert(unique, name.clone());
+    owners.0.lock().unwrap().insert(unique, name.clone());
+    spawn(async move {
         for iface in IFACES {
-            let props: zbus::Result<HashMap<String, OwnedValue>> =
-                Proxy::new(&conn, name.clone(), PATH, "org.freedesktop.DBus.Properties").and_then(|p| p.call("GetAll", &(iface,)));
-            match props {
+            match get_all(&conn, &name, PATH, iface).await {
                 Ok(p) => emit_props(&qt, &name, iface, &p),
                 Err(e) => return eprintln!("Mpris: cannot read {name}: {e}"),
             }
@@ -105,35 +109,34 @@ fn add_player(conn: Connection, qt: Qt, owners: Owners, name: String, unique: St
     });
 }
 
-fn stream(conn: &Connection, rule: zbus::Result<MatchRule<'static>>) -> zbus::Result<MessageIterator> {
-    MessageIterator::for_match_rule(rule?, conn, None)
-}
-
-fn run(conn: Connection, qt: Qt) -> zbus::Result<()> {
+async fn run(conn: Connection, qt: Qt) -> zbus::Result<()> {
     let owners = Owners::default();
-    let changes = stream(
+    let rule = |b: zbus::Result<zbus::match_rule::Builder<'static>>| b.map(|b| b.build());
+    let mut changes = signals(
         &conn,
-        MatchRule::builder()
+        rule(MatchRule::builder()
             .msg_type(Type::Signal)
             .sender("org.freedesktop.DBus")?
             .interface("org.freedesktop.DBus")?
             .member("NameOwnerChanged")?
-            .arg0ns(PREFIX)
-            .map(|b| b.build()),
-    )?;
-    let props = stream(
+            .arg0ns(PREFIX))?,
+    )
+    .await?;
+    let mut props = signals(
         &conn,
-        MatchRule::builder().msg_type(Type::Signal).path(PATH)?.interface("org.freedesktop.DBus.Properties")?.member("PropertiesChanged").map(|b| b.build()),
-    )?;
-    let seeks = stream(
+        rule(MatchRule::builder().msg_type(Type::Signal).path(PATH)?.interface("org.freedesktop.DBus.Properties")?.member("PropertiesChanged"))?,
+    )
+    .await?;
+    let mut seeks = signals(
         &conn,
-        MatchRule::builder().msg_type(Type::Signal).path(PATH)?.interface("org.mpris.MediaPlayer2.Player")?.member("Seeked").map(|b| b.build()),
-    )?;
+        rule(MatchRule::builder().msg_type(Type::Signal).path(PATH)?.interface("org.mpris.MediaPlayer2.Player")?.member("Seeked"))?,
+    )
+    .await?;
 
-    let dbus = zbus::blocking::fdo::DBusProxy::new(&conn)?;
-    for name in dbus.list_names()? {
+    let dbus = zbus::fdo::DBusProxy::new(&conn).await?;
+    for name in dbus.list_names().await? {
         if name.starts_with(PREFIX) {
-            if let Ok(owner) = dbus.get_name_owner(name.as_ref()) {
+            if let Ok(owner) = dbus.get_name_owner(name.as_ref()).await {
                 add_player(conn.clone(), qt.clone(), owners.clone(), name.to_string(), owner.to_string());
             }
         }
@@ -141,8 +144,9 @@ fn run(conn: Connection, qt: Qt) -> zbus::Result<()> {
 
     {
         let (qt, owners) = (qt.clone(), owners.clone());
-        std::thread::spawn(move || {
-            for msg in props.flatten() {
+        spawn(async move {
+            while let Some(msg) = next(&mut props).await {
+                let Ok(msg) = msg else { continue };
                 let Some(unique) = msg.header().sender().map(|s| s.to_string()) else { continue };
                 let Some(name) = owners.name_of(&unique) else { continue };
                 if let Ok((iface, changed, _)) = msg.body().deserialize::<(String, HashMap<String, OwnedValue>, Vec<String>)>() {
@@ -153,8 +157,9 @@ fn run(conn: Connection, qt: Qt) -> zbus::Result<()> {
     }
     {
         let (qt, owners) = (qt.clone(), owners.clone());
-        std::thread::spawn(move || {
-            for msg in seeks.flatten() {
+        spawn(async move {
+            while let Some(msg) = next(&mut seeks).await {
+                let Ok(msg) = msg else { continue };
                 let Some(name) = msg.header().sender().and_then(|s| owners.name_of(s.as_str())) else { continue };
                 if let Ok(pos) = msg.body().deserialize::<i64>() {
                     let _ = qt.queue(move |this| this.seeked(QString::from(&name), pos));
@@ -162,9 +167,8 @@ fn run(conn: Connection, qt: Qt) -> zbus::Result<()> {
             }
         });
     }
-    for msg in changes {
-        let msg = msg?;
-        let Ok((name, old, new)) = msg.body().deserialize::<(String, String, String)>() else { continue };
+    while let Some(msg) = next(&mut changes).await {
+        let Some((name, old, new)) = qs_dbus::owner_change(&msg?) else { continue };
         if !name.starts_with(PREFIX) {
             continue;
         }
@@ -183,39 +187,33 @@ fn run(conn: Connection, qt: Qt) -> zbus::Result<()> {
 impl cxx_qt::Initialize for qobject::MprisCore {
     fn initialize(self: Pin<&mut Self>) {
         let qt = self.qt_thread();
-        let slot = self.worker.clone();
-        std::thread::Builder::new()
-            .name("mpris".into())
-            .spawn(move || {
-                let conn = match Connection::session() {
-                    Ok(c) => {
-                        slot.get_or_init(|| qs_dbus::Worker::new(c.clone(), "mpris-calls"));
-                        c
-                    }
-                    Err(e) => return eprintln!("Mpris: no session bus: {e}"),
-                };
-                if let Err(e) = run(conn, qt) {
-                    eprintln!("Mpris: {e}");
-                }
-            })
-            .expect("spawn mpris thread");
+        spawn(async move {
+            let conn = match Bus::Session.connect().await {
+                Ok(c) => c,
+                Err(e) => return eprintln!("Mpris: no session bus: {e}"),
+            };
+            if let Err(e) = run(conn, qt).await {
+                eprintln!("Mpris: {e}");
+            }
+        });
     }
 }
 
 impl qobject::MprisCore {
     /// Queues `f` on the call worker, in request order.
-    fn with_conn(&self, what: String, f: impl FnOnce(&Connection) -> zbus::Result<()> + Send + 'static) {
-        if let Some(worker) = self.worker.get() {
-            worker.run(format!("Mpris: {what}"), f);
-        }
+    fn with_conn<F>(&self, what: String, f: impl FnOnce(Connection) -> F + Send + 'static)
+    where
+        F: std::future::Future<Output = zbus::Result<()>> + Send + 'static,
+    {
+        self.worker.run(format!("Mpris: {what}"), f);
     }
 
     fn refresh(&self, name: &QString, iface: &QString, prop: &QString) {
         let (name, iface, prop) = (name.to_string(), iface.to_string(), prop.to_string());
         let qt = self.qt_thread();
-        self.with_conn(format!("reading {prop} of {name}"), move |conn| {
-            let p = Proxy::new(conn, name.clone(), PATH, "org.freedesktop.DBus.Properties")?;
-            let value: OwnedValue = p.call("Get", &(iface.as_str(), prop.as_str()))?;
+        self.with_conn(format!("reading {prop} of {name}"), move |conn| async move {
+            let p = Proxy::new(&conn, name.clone(), PATH, "org.freedesktop.DBus.Properties").await?;
+            let value: OwnedValue = p.call("Get", &(iface.as_str(), prop.as_str())).await?;
             emit_props(&qt, &name, &iface, &HashMap::from([(prop, value)]));
             Ok(())
         });
@@ -223,29 +221,38 @@ impl qobject::MprisCore {
 
     fn call(&self, name: &QString, iface: &QString, method: &QString) {
         let (name, iface, method) = (name.to_string(), iface.to_string(), method.to_string());
-        self.with_conn(format!("{method} on {name}"), move |conn| Proxy::new(conn, name, PATH, iface)?.call(method.as_str(), &()));
+        self.with_conn(format!("{method} on {name}"), move |conn| async move {
+            Proxy::new(&conn, name, PATH, iface).await?.call(method.as_str(), &()).await
+        });
     }
 
     fn seek(&self, name: &QString, offset_us: i64) {
         let name = name.to_string();
-        self.with_conn(format!("Seek on {name}"), move |conn| Proxy::new(conn, name, PATH, IFACES[1])?.call("Seek", &(offset_us,)));
+        self.with_conn(format!("Seek on {name}"), move |conn| async move {
+            Proxy::new(&conn, name, PATH, IFACES[1]).await?.call("Seek", &(offset_us,)).await
+        });
     }
 
     fn set_position(&self, name: &QString, track_id: &QString, position_us: i64) {
         let (name, track) = (name.to_string(), track_id.to_string());
-        self.with_conn(format!("SetPosition on {name}"), move |conn| {
-            Proxy::new(conn, name, PATH, IFACES[1])?.call("SetPosition", &(ObjectPath::try_from(track.as_str())?, position_us))
+        self.with_conn(format!("SetPosition on {name}"), move |conn| async move {
+            let track = ObjectPath::try_from(track.as_str())?;
+            Proxy::new(&conn, name, PATH, IFACES[1]).await?.call("SetPosition", &(track, position_us)).await
         });
     }
 
     fn open_uri(&self, name: &QString, uri: &QString) {
         let (name, uri) = (name.to_string(), uri.to_string());
-        self.with_conn(format!("OpenUri on {name}"), move |conn| Proxy::new(conn, name, PATH, IFACES[1])?.call("OpenUri", &(uri.as_str(),)));
+        self.with_conn(format!("OpenUri on {name}"), move |conn| async move {
+            Proxy::new(&conn, name, PATH, IFACES[1]).await?.call("OpenUri", &(uri.as_str(),)).await
+        });
     }
 
     fn set(&self, name: &QString, iface: &QString, prop: &QString, value: SetValue) {
         let (name, iface, prop) = (name.to_string(), iface.to_string(), prop.to_string());
-        self.with_conn(format!("setting {prop} on {name}"), move |conn| qs_dbus::set_property(conn, &name, PATH, &iface, &prop, value));
+        self.with_conn(format!("setting {prop} on {name}"), move |conn| async move {
+            qs_dbus::set_property(&conn, &name, PATH, &iface, &prop, value).await
+        });
     }
 
     fn set_bool(&self, name: &QString, iface: &QString, prop: &QString, value: bool) {

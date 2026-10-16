@@ -41,15 +41,15 @@ use core::pin::Pin;
 use cxx_qt::{CxxQtThread, Threading};
 use cxx_qt_lib::QString;
 use qs_dbus::pixmap::{image_dir, Pixmap};
-use qs_dbus::{json_string, Worker};
+use qs_dbus::rt::{next, spawn};
+use qs_dbus::{json_string, Bus, Worker};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
-use zbus::blocking::{Connection, MessageIterator, Proxy};
+use std::sync::{Arc, Mutex};
 use zbus::message::{Header, Type};
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::{OwnedValue, Value};
-use zbus::MatchRule;
+use zbus::{Connection, MatchRule, Proxy};
 
 const WATCHER: &str = "org.kde.StatusNotifierWatcher";
 const WATCHER_PATH: &str = "/StatusNotifierWatcher";
@@ -57,9 +57,14 @@ const ITEM: &str = "org.kde.StatusNotifierItem";
 
 type Qt = CxxQtThread<qobject::SystemTrayCore>;
 
-#[derive(Default)]
 pub struct SystemTrayCoreRust {
-    worker: Arc<OnceLock<Worker>>,
+    worker: Worker,
+}
+
+impl Default for SystemTrayCoreRust {
+    fn default() -> Self {
+        Self { worker: Worker::new(Bus::Session, "SystemTray") }
+    }
 }
 
 // ---- watcher ----
@@ -148,19 +153,23 @@ impl Watcher {
     async fn status_notifier_host_unregistered(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
 }
 
-fn run_watcher() -> zbus::Result<()> {
+async fn run_watcher() -> zbus::Result<()> {
     let watcher = Watcher::default();
     let (items, hosts) = (watcher.items.clone(), watcher.hosts.clone());
-    let conn = zbus::blocking::connection::Builder::session()?.serve_at(WATCHER_PATH, watcher)?.build()?;
+    let conn = Bus::Session.connect().await?;
+    conn.object_server().at(WATCHER_PATH, watcher).await?;
+    let mut changes = qs_dbus::name_owner_changes(&conn, "").await?;
     {
         let conn = conn.clone();
-        std::thread::Builder::new()
-            .name("tray-watcher-name".into())
-            .spawn(move || qs_dbus::claim_name(&conn, WATCHER, "SystemTray"))
-            .expect("spawn tray watcher thread");
+        spawn(async move {
+            if let Err(e) = qs_dbus::claim_name(&conn, WATCHER, "SystemTray").await {
+                eprintln!("SystemTray: {e}");
+            }
+        });
     }
     // Drop items and hosts whose service left the bus.
-    for (name, _, new) in qs_dbus::name_owner_changes(&conn, "")? {
+    while let Some(msg) = next(&mut changes).await {
+        let Some((name, _, new)) = qs_dbus::owner_change(&msg?) else { continue };
         if !new.is_empty() {
             continue;
         }
@@ -180,13 +189,13 @@ fn run_watcher() -> zbus::Result<()> {
         if gone.is_empty() && !host_gone {
             continue;
         }
-        let iface = conn.object_server().interface::<_, Watcher>(WATCHER_PATH)?;
+        let iface = conn.object_server().interface::<_, Watcher>(WATCHER_PATH).await?;
         let emitter = iface.signal_emitter();
         for item in gone {
-            let _ = zbus::block_on(Watcher::status_notifier_item_unregistered(emitter, &item));
+            let _ = Watcher::status_notifier_item_unregistered(emitter, &item).await;
         }
         if host_gone {
-            let _ = zbus::block_on(Watcher::status_notifier_host_unregistered(emitter));
+            let _ = Watcher::status_notifier_host_unregistered(emitter).await;
         }
     }
     Ok(())
@@ -222,26 +231,32 @@ fn split_key(key: &str) -> (String, String) {
 }
 
 impl Host {
-    fn connect_to_watcher(&self, host_id: &str) {
-        let watcher = Proxy::new(&self.conn, WATCHER, WATCHER_PATH, WATCHER);
-        let result = watcher.and_then(|w| {
-            w.call::<_, _, ()>("RegisterStatusNotifierHost", &(host_id,))?;
-            w.get_property::<Vec<String>>("RegisteredStatusNotifierItems")
-        });
-        match result {
-            Ok(items) => items.into_iter().for_each(|i| self.add(i)),
+    async fn connect_to_watcher(&self, host_id: &str) {
+        let result = async {
+            let w = Proxy::new(&self.conn, WATCHER, WATCHER_PATH, WATCHER).await?;
+            w.call::<_, _, ()>("RegisterStatusNotifierHost", &(host_id,)).await?;
+            w.get_property::<Vec<String>>("RegisteredStatusNotifierItems").await
+        };
+        match result.await {
+            Ok(items) => {
+                for i in items {
+                    self.add(i).await;
+                }
+            }
             Err(e) => eprintln!("SystemTray: cannot use the StatusNotifierWatcher: {e}"),
         }
     }
 
-    fn add(&self, key: String) {
+    async fn add(&self, key: String) {
         if self.items.lock().unwrap().contains_key(&key) {
             return;
         }
         let (service, path) = split_key(&key);
-        let owner = match zbus::blocking::fdo::DBusProxy::new(&self.conn)
-            .and_then(|d| Ok(d.get_name_owner(zbus::names::BusName::try_from(service.as_str())?)?))
-        {
+        let owner = async {
+            let d = zbus::fdo::DBusProxy::new(&self.conn).await?;
+            zbus::Result::Ok(d.get_name_owner(zbus::names::BusName::try_from(service.as_str())?).await?)
+        };
+        let owner = match owner.await {
             Ok(o) => o.to_string(),
             Err(e) => return eprintln!("SystemTray: cannot create item for {key}: {e}"),
         };
@@ -269,14 +284,12 @@ impl Host {
         keys.iter().for_each(|k| self.remove(k));
     }
 
-    /// Re-reads all properties of an item off the signal thread.
+    /// Re-reads all properties of an item in its own task, so a slow item can't hold up signals.
     fn refresh(&self, key: String) {
         let host = self.clone();
-        std::thread::spawn(move || {
+        spawn(async move {
             let Some((service, path)) = host.items.lock().unwrap().get(&key).map(|i| (i.service.clone(), i.path.clone())) else { return };
-            let props: zbus::Result<HashMap<String, OwnedValue>> =
-                Proxy::new(&host.conn, service, path, "org.freedesktop.DBus.Properties").and_then(|p| p.call("GetAll", &(ITEM,)));
-            match props {
+            match qs_dbus::get_all(&host.conn, &service, &path, ITEM).await {
                 Ok(p) => host.emit(&key, &p),
                 Err(e) => eprintln!("SystemTray: failed to load tray item {key}: {e}"),
             }
@@ -358,30 +371,29 @@ impl Host {
     }
 }
 
-fn stream(conn: &Connection, iface: &str) -> zbus::Result<MessageIterator> {
-    let rule = MatchRule::builder().msg_type(Type::Signal).interface(iface.to_string())?.build();
-    MessageIterator::for_match_rule(rule, conn, None)
+async fn stream(conn: &Connection, iface: &str) -> zbus::Result<zbus::MessageStream> {
+    qs_dbus::signals(conn, MatchRule::builder().msg_type(Type::Signal).interface(iface.to_string())?.build()).await
 }
 
-fn run_host(qt: Qt, worker: Arc<OnceLock<Worker>>) -> zbus::Result<()> {
-    let conn = Connection::session()?;
-    worker.get_or_init(|| Worker::new(conn.clone(), "tray-calls"));
+async fn run_host(qt: Qt) -> zbus::Result<()> {
+    let conn = Bus::Session.connect().await?;
     let launch = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
     let host_id = format!("org.kde.StatusNotifierHost-{}-{launch}", std::process::id());
-    conn.request_name(host_id.as_str())?;
+    conn.request_name(host_id.as_str()).await?;
     let host = Host { conn: conn.clone(), qt, items: Default::default(), image_dir: image_dir("tray"), seq: Default::default() };
 
-    let watcher_signals = stream(&conn, WATCHER)?;
-    let item_signals = stream(&conn, ITEM)?;
-    let watcher_owner = qs_dbus::name_owner_changes(&conn, WATCHER)?;
+    let mut watcher_signals = stream(&conn, WATCHER).await?;
+    let mut item_signals = stream(&conn, ITEM).await?;
+    let mut watcher_owner = qs_dbus::name_owner_changes(&conn, WATCHER).await?;
     {
         let host = host.clone();
-        std::thread::spawn(move || {
-            for msg in watcher_signals.flatten() {
+        spawn(async move {
+            while let Some(msg) = next(&mut watcher_signals).await {
+                let Ok(msg) = msg else { continue };
                 let hdr = msg.header();
                 let Ok(key) = msg.body().deserialize::<String>() else { continue };
                 match hdr.member().map(|m| m.as_str()) {
-                    Some("StatusNotifierItemRegistered") => host.add(key),
+                    Some("StatusNotifierItemRegistered") => host.add(key).await,
                     Some("StatusNotifierItemUnregistered") => host.remove(&key),
                     _ => {}
                 }
@@ -390,8 +402,9 @@ fn run_host(qt: Qt, worker: Arc<OnceLock<Worker>>) -> zbus::Result<()> {
     }
     {
         let host = host.clone();
-        std::thread::spawn(move || {
-            for msg in item_signals.flatten() {
+        spawn(async move {
+            while let Some(msg) = next(&mut item_signals).await {
+                let Ok(msg) = msg else { continue };
                 let hdr = msg.header();
                 let (Some(sender), Some(path)) = (hdr.sender(), hdr.path()) else { continue };
                 if hdr.member().is_some_and(|m| m.starts_with("New")) {
@@ -400,12 +413,13 @@ fn run_host(qt: Qt, worker: Arc<OnceLock<Worker>>) -> zbus::Result<()> {
             }
         });
     }
-    host.connect_to_watcher(&host_id);
-    for (_, _, new) in watcher_owner {
+    host.connect_to_watcher(&host_id).await;
+    while let Some(msg) = next(&mut watcher_owner).await {
+        let Some((_, _, new)) = qs_dbus::owner_change(&msg?) else { continue };
         if new.is_empty() {
             host.remove_all();
         } else {
-            host.connect_to_watcher(&host_id);
+            host.connect_to_watcher(&host_id).await;
         }
     }
     Ok(())
@@ -413,44 +427,38 @@ fn run_host(qt: Qt, worker: Arc<OnceLock<Worker>>) -> zbus::Result<()> {
 
 impl cxx_qt::Initialize for qobject::SystemTrayCore {
     fn initialize(self: Pin<&mut Self>) {
-        let (qt, worker) = (self.qt_thread(), self.worker.clone());
-        std::thread::Builder::new()
-            .name("tray-watcher".into())
-            .spawn(|| {
-                if let Err(e) = run_watcher() {
-                    eprintln!("SystemTray: watcher: {e}");
-                }
-            })
-            .expect("spawn tray watcher");
-        std::thread::Builder::new()
-            .name("tray-host".into())
-            .spawn(move || {
-                if let Err(e) = run_host(qt, worker) {
-                    eprintln!("SystemTray: host: {e}");
-                }
-            })
-            .expect("spawn tray host");
+        let qt = self.qt_thread();
+        spawn(async {
+            if let Err(e) = run_watcher().await {
+                eprintln!("SystemTray: watcher: {e}");
+            }
+        });
+        spawn(async move {
+            if let Err(e) = run_host(qt).await {
+                eprintln!("SystemTray: host: {e}");
+            }
+        });
     }
 }
 
 impl qobject::SystemTrayCore {
-    fn call(&self, key: &QString, method: &'static str, f: impl FnOnce(&Proxy<'_>) -> zbus::Result<()> + Send + 'static) {
+    fn call<B: zbus::export::serde::Serialize + zbus::zvariant::DynamicType + Send + Sync + 'static>(&self, key: &QString, method: &'static str, body: B) {
         let (service, path) = split_key(&key.to_string());
-        if let Some(w) = self.worker.get() {
-            w.run(format!("SystemTray: {method} on {service}"), move |conn| f(&Proxy::new(conn, service, path, ITEM)?));
-        }
+        self.worker.run(format!("SystemTray: {method} on {service}"), move |conn| async move {
+            Proxy::new(&conn, service, path, ITEM).await?.call::<_, _, ()>(method, &body).await
+        });
     }
 
     fn activate(&self, key: &QString) {
-        self.call(key, "Activate", |p| p.call("Activate", &(0i32, 0i32)));
+        self.call(key, "Activate", (0i32, 0i32));
     }
 
     fn secondary_activate(&self, key: &QString) {
-        self.call(key, "SecondaryActivate", |p| p.call("SecondaryActivate", &(0i32, 0i32)));
+        self.call(key, "SecondaryActivate", (0i32, 0i32));
     }
 
     fn scroll(&self, key: &QString, delta: i32, horizontal: bool) {
         let orientation = if horizontal { "horizontal" } else { "vertical" };
-        self.call(key, "Scroll", move |p| p.call("Scroll", &(delta, orientation)));
+        self.call(key, "Scroll", (delta, orientation));
     }
 }

@@ -1,6 +1,7 @@
 //! com.canonical.dbusmenu client (upstream dbus/dbusmenu). One `DBusMenuClient` per open menu;
-//! all of them share one session connection, one worker thread for calls (in request order) and
-//! one signal thread that routes LayoutUpdated/ItemsPropertiesUpdated by (unique sender, path).
+//! all of them share the session connection, one call worker (in request order) and one signal
+//! task that routes LayoutUpdated/ItemsPropertiesUpdated by (unique sender, path), all on the
+//! D-Bus thread.
 //! Layouts and property updates reach QML as JSON; `icon-data` PNGs become files.
 
 #[cxx_qt::bridge]
@@ -47,15 +48,14 @@ pub mod qobject {
 use core::pin::Pin;
 use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::QString;
-use qs_dbus::{json_string, write_json, Worker};
+use qs_dbus::{json_string, write_json, Bus, Worker};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
-use zbus::blocking::{Connection, MessageIterator};
 use zbus::message::Type;
 use zbus::zvariant::{OwnedValue, Value};
-use zbus::MatchRule;
+use zbus::{Connection, MatchRule};
 
 const IFACE: &str = "com.canonical.dbusmenu";
 
@@ -73,22 +73,16 @@ struct Shared {
 }
 
 fn shared() -> Option<&'static Shared> {
-    static S: OnceLock<Option<Shared>> = OnceLock::new();
-    S.get_or_init(|| {
-        let conn = Connection::session().map_err(|e| eprintln!("DBusMenu: no session bus: {e}")).ok()?;
-        let worker = Worker::new(conn.clone(), "qs-dbusmenu");
-        let signals = conn.clone();
-        std::thread::Builder::new()
-            .name("qs-dbusmenu-signals".into())
-            .spawn(move || {
-                if let Err(e) = signal_loop(&signals) {
-                    eprintln!("DBusMenu: signal stream failed: {e}");
-                }
-            })
-            .ok()?;
-        Some(Shared { worker, routes: Mutex::new(HashMap::new()) })
-    })
-    .as_ref()
+    static S: OnceLock<Shared> = OnceLock::new();
+    Some(S.get_or_init(|| {
+        qs_dbus::rt::spawn(async {
+            let res = async { signal_loop(&Bus::Session.connect().await?).await };
+            if let Err(e) = res.await {
+                eprintln!("DBusMenu: signal stream failed: {e}");
+            }
+        });
+        Shared { worker: Worker::new(Bus::Session, "DBusMenu"), routes: Mutex::new(HashMap::new()) }
+    }))
 }
 
 #[derive(Default)]
@@ -111,9 +105,10 @@ fn targets(sender: &str, path: &str) -> Vec<Qt> {
     s.routes.lock().unwrap().values().filter(|r| r.sender == sender && r.path == path).map(|r| r.qt.clone()).collect()
 }
 
-fn signal_loop(conn: &Connection) -> zbus::Result<()> {
+async fn signal_loop(conn: &Connection) -> zbus::Result<()> {
     let rule = MatchRule::builder().msg_type(Type::Signal).interface(IFACE)?.build();
-    for msg in MessageIterator::for_match_rule(rule, conn, None)? {
+    let mut stream = qs_dbus::signals(conn, rule).await?;
+    while let Some(msg) = qs_dbus::rt::next(&mut stream).await {
         let Ok(msg) = msg else { continue };
         let header = msg.header();
         let (Some(sender), Some(path), Some(member)) = (header.sender(), header.path(), header.member()) else { continue };
@@ -231,12 +226,12 @@ type Layout = (u32, (i32, HashMap<String, OwnedValue>, Vec<OwnedValue>));
 
 fn fetch_layout(qt: Qt, sender: String, path: String, id: i32, about_to_show: bool) {
     let Some(s) = shared() else { return };
-    s.worker.run(format!("DBusMenu GetLayout({id}) on {sender}{path}"), move |conn| {
+    s.worker.run(format!("DBusMenu GetLayout({id}) on {sender}{path}"), move |conn| async move {
         if about_to_show {
             // Errors are ignored like upstream: the layout is requested either way.
-            let _ = conn.call_method(Some(sender.as_str()), path.as_str(), Some(IFACE), "AboutToShow", &(id,));
+            let _ = conn.call_method(Some(sender.as_str()), path.as_str(), Some(IFACE), "AboutToShow", &(id,)).await;
         }
-        let reply = conn.call_method(Some(sender.as_str()), path.as_str(), Some(IFACE), "GetLayout", &(id, -1i32, Vec::<String>::new()))?;
+        let reply = conn.call_method(Some(sender.as_str()), path.as_str(), Some(IFACE), "GetLayout", &(id, -1i32, Vec::<String>::new())).await?;
         let (_revision, (root, props, children)): Layout = reply.body().deserialize()?;
         let mut json = String::new();
         let kids: Vec<&Value> = children.iter().map(|v| &**v).collect();
@@ -266,15 +261,15 @@ impl qobject::DBusMenuClient {
         }
         // Signals carry the unique name, so routes are keyed by the owner of `service`.
         let routes_qt = qt.clone();
-        s.worker.run(format!("DBusMenu connect {service}{path}"), move |conn| {
+        s.worker.run(format!("DBusMenu connect {service}{path}"), move |conn| async move {
             let sender = if service.starts_with(':') {
                 service.clone()
             } else {
-                zbus::blocking::fdo::DBusProxy::new(conn)?.get_name_owner(service.as_str().try_into()?)?.to_string()
+                zbus::fdo::DBusProxy::new(&conn).await?.get_name_owner(service.as_str().try_into()?).await?.to_string()
             };
             shared().unwrap().routes.lock().unwrap().insert(key, Route { sender, path: path.clone(), qt: routes_qt });
-            let props = zbus::blocking::fdo::PropertiesProxy::builder(conn).destination(service.as_str())?.path(path.as_str())?.build()?;
-            if let Ok(v) = props.get(IFACE.try_into()?, "IconThemePath") {
+            let props = zbus::fdo::PropertiesProxy::builder(&conn).destination(service.as_str())?.path(path.as_str())?.build().await?;
+            if let Ok(v) = props.get(IFACE.try_into()?, "IconThemePath").await {
                 let dirs: Vec<String> = Vec::<String>::try_from(v).unwrap_or_default();
                 let joined = dirs.join(":");
                 let _ = qt.queue(move |obj| obj.icon_theme_path(QString::from(&joined)));
@@ -294,9 +289,9 @@ impl qobject::DBusMenuClient {
     fn send_event(&self, id: i32, event: &QString) {
         let Some(s) = shared() else { return };
         let (service, path, event) = (self.service.clone(), self.path.clone(), event.to_string());
-        s.worker.run(format!("DBusMenu Event({id}, {event})"), move |conn| {
+        s.worker.run(format!("DBusMenu Event({id}, {event})"), move |conn| async move {
             let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as u32).unwrap_or(0);
-            conn.call_method(Some(service.as_str()), path.as_str(), Some(IFACE), "Event", &(id, event.as_str(), Value::from(0i32), ts))?;
+            conn.call_method(Some(service.as_str()), path.as_str(), Some(IFACE), "Event", &(id, event.as_str(), Value::from(0i32), ts)).await?;
             Ok(())
         });
     }

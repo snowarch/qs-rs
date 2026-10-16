@@ -52,61 +52,57 @@ use core::pin::Pin;
 use cxx_qt::Threading;
 use cxx_qt_lib::{QString, QStringList};
 use qs_dbus::object_manager::{self, Event};
-use qs_dbus::zbus::blocking::Connection;
-use qs_dbus::SetValue;
-use std::sync::{Arc, OnceLock};
+use qs_dbus::{Bus, SetValue};
 
 const BLUEZ: &str = "org.bluez";
 
-#[derive(Default)]
 pub struct BluezCoreRust {
-    worker: Arc<OnceLock<qs_dbus::Worker>>,
+    worker: qs_dbus::Worker,
+}
+
+impl Default for BluezCoreRust {
+    fn default() -> Self {
+        Self { worker: qs_dbus::Worker::new(Bus::System, "Bluetooth") }
+    }
 }
 
 impl cxx_qt::Initialize for qobject::BluezCore {
     fn initialize(self: Pin<&mut Self>) {
         let qt = self.qt_thread();
-        let slot = self.worker.clone();
-        std::thread::Builder::new()
-            .name("bluez".into())
-            .spawn(move || {
-                let conn = match Connection::system() {
-                    Ok(c) => {
-                        slot.get_or_init(|| qs_dbus::Worker::new(c.clone(), "bluez-calls"));
-                        c
-                    }
-                    Err(e) => return eprintln!("Bluetooth: no system bus: {e}"),
-                };
-                let res = object_manager::run(&conn, BLUEZ, "/", |event| {
-                    let _ = match event {
-                        Event::InterfacesAdded(path, json) => {
-                            qt.queue(move |this| this.interfaces_added(QString::from(&path), QString::from(&json)))
+        qs_dbus::rt::spawn(async move {
+            let conn = match Bus::System.connect().await {
+                Ok(c) => c,
+                Err(e) => return eprintln!("Bluetooth: no system bus: {e}"),
+            };
+            let res = object_manager::run(&conn, BLUEZ, "/", |event| {
+                let _ = match event {
+                    Event::InterfacesAdded(path, json) => qt.queue(move |this| this.interfaces_added(QString::from(&path), QString::from(&json))),
+                    Event::InterfacesRemoved(path, ifaces) => qt.queue(move |this| {
+                        let mut list = QStringList::default();
+                        for i in &ifaces {
+                            list.append(QString::from(i));
                         }
-                        Event::InterfacesRemoved(path, ifaces) => qt.queue(move |this| {
-                            let mut list = QStringList::default();
-                            for i in &ifaces {
-                                list.append(QString::from(i));
-                            }
-                            this.interfaces_removed(QString::from(&path), list)
-                        }),
-                        Event::PropertiesChanged(path, iface, json) => qt.queue(move |this| {
-                            this.properties_changed(QString::from(&path), QString::from(&iface), QString::from(&json))
-                        }),
-                    };
-                });
-                if let Err(e) = res {
-                    eprintln!("Bluetooth: {e}");
-                }
+                        this.interfaces_removed(QString::from(&path), list)
+                    }),
+                    Event::PropertiesChanged(path, iface, json) => {
+                        qt.queue(move |this| this.properties_changed(QString::from(&path), QString::from(&iface), QString::from(&json)))
+                    }
+                };
             })
-            .expect("spawn bluez thread");
+            .await;
+            if let Err(e) = res {
+                eprintln!("Bluetooth: {e}");
+            }
+        });
     }
 }
 
 impl qobject::BluezCore {
     fn set(&self, path: &QString, iface: &QString, name: &QString, value: SetValue) {
-        let Some(worker) = self.worker.get() else { return };
         let (path, iface, name) = (path.to_string(), iface.to_string(), name.to_string());
-        worker.run(format!("Bluetooth: setting {name} on {path}"), move |conn| qs_dbus::set_property(conn, BLUEZ, &path, &iface, &name, value));
+        self.worker.run(format!("Bluetooth: setting {name} on {path}"), move |conn| async move {
+            qs_dbus::set_property(&conn, BLUEZ, &path, &iface, &name, value).await
+        });
     }
 
     fn set_bool(&self, path: &QString, iface: &QString, name: &QString, value: bool) {
@@ -122,11 +118,10 @@ impl qobject::BluezCore {
     }
 
     fn call(&self, path: &QString, iface: &QString, method: &QString, object_arg: &QString) {
-        let Some(worker) = self.worker.get() else { return };
         let (path, iface, method, arg) = (path.to_string(), iface.to_string(), method.to_string(), object_arg.to_string());
         let qt = self.qt_thread();
-        worker.run(format!("Bluetooth: {method} on {path}"), move |conn| {
-            let res = qs_dbus::call(conn, BLUEZ, &path, &iface, &method, (!arg.is_empty()).then_some(arg.as_str()));
+        self.worker.run(format!("Bluetooth: {method} on {path}"), move |conn| async move {
+            let res = qs_dbus::call(&conn, BLUEZ, &path, &iface, &method, (!arg.is_empty()).then_some(arg.as_str())).await;
             let error = res.as_ref().err().map(|e| e.to_string()).unwrap_or_default();
             let _ = qt.queue(move |this| this.call_finished(QString::from(&path), QString::from(&method), QString::from(&error)));
             res

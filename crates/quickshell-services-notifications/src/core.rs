@@ -57,10 +57,10 @@ pub struct NotificationBaseRust {
 use cxx_qt::{CxxQtThread, Threading};
 use cxx_qt_lib::QString;
 use qs_dbus::pixmap::{image_dir, Pixmap};
-use qs_dbus::{json_string, props_json, Worker};
+use qs_dbus::{json_string, props_json, Bus, Worker};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::OwnedValue;
 
@@ -78,10 +78,16 @@ struct State {
     image_dir: PathBuf,
 }
 
-#[derive(Default)]
 pub struct NotificationServerCoreRust {
     state: Arc<Mutex<Option<State>>>,
-    worker: Arc<OnceLock<Worker>>,
+    /// Signals go out in order, after the interface is served.
+    worker: Worker,
+}
+
+impl Default for NotificationServerCoreRust {
+    fn default() -> Self {
+        Self { state: Arc::default(), worker: Worker::new(Bus::Session, "Notifications") }
+    }
 }
 
 struct Server {
@@ -198,50 +204,44 @@ impl qobject::NotificationServerCore {
         *guard = Some(State { next_id: 1, live: HashMap::new(), capabilities: caps, image_seq: 0, image_dir: image_dir("notifications") });
         drop(guard);
 
-        let (state, worker, qt) = (self.state.clone(), self.worker.clone(), self.qt_thread());
-        std::thread::Builder::new()
-            .name("notifications".into())
-            .spawn(move || {
-                let conn = zbus::blocking::connection::Builder::session()
-                    .and_then(|b| b.serve_at(PATH, Server { state, qt }))
-                    .and_then(|b| b.build());
-                let conn = match conn {
-                    Ok(c) => c,
-                    Err(e) => return eprintln!("Notifications: cannot serve on the session bus: {e}"),
-                };
-                worker.get_or_init(|| Worker::new(conn.clone(), "notifications-signals"));
-                if let Err(e) = qs_dbus::claim_name(&conn, NAME, "Notifications") {
+        let (state, qt) = (self.state.clone(), self.qt_thread());
+        // Served through the worker so signals emitted from QML queue behind it.
+        self.worker.run("Notifications: serving".into(), move |conn| async move {
+            conn.object_server().at(PATH, Server { state, qt }).await?;
+            qs_dbus::rt::spawn(async move {
+                if let Err(e) = qs_dbus::claim_name(&conn, NAME, "Notifications").await {
                     eprintln!("Notifications: {e}");
                 }
-            })
-            .expect("spawn notifications thread");
-    }
-
-    fn emit(&self, what: &'static str, f: impl FnOnce(&SignalEmitter<'static>) -> zbus::Result<()> + Send + 'static) {
-        if let Some(worker) = self.worker.get() {
-            worker.run(format!("Notifications: {what}"), move |conn| {
-                let iface = conn.object_server().interface::<_, Server>(PATH)?;
-                f(iface.signal_emitter())
             });
-        }
+            Ok(())
+        });
     }
 
+    fn emit<F>(&self, what: &'static str, f: impl FnOnce(SignalEmitter<'static>) -> F + Send + 'static)
+    where
+        F: std::future::Future<Output = zbus::Result<()>> + Send + 'static,
+    {
+        self.worker.run(format!("Notifications: {what}"), move |conn| async move {
+            let iface = conn.object_server().interface::<_, Server>(PATH).await?;
+            f(iface.signal_emitter().clone()).await
+        });
+    }
     fn closed(&self, id: u32, reason: u32) {
         if let Some(st) = self.state.lock().unwrap().as_mut() {
             if let Some(Some(file)) = st.live.remove(&id) {
                 let _ = std::fs::remove_file(file);
             }
         }
-        self.emit("NotificationClosed", move |e| zbus::block_on(Server::notification_closed(e, id, reason)));
+        self.emit("NotificationClosed", move |e| async move { Server::notification_closed(&e, id, reason).await });
     }
 
     fn invoke_action(&self, id: u32, action: &QString) {
         let action = action.to_string();
-        self.emit("ActionInvoked", move |e| zbus::block_on(Server::action_invoked(e, id, &action)));
+        self.emit("ActionInvoked", move |e| async move { Server::action_invoked(&e, id, &action).await });
     }
 
     fn reply(&self, id: u32, text: &QString) {
         let text = text.to_string();
-        self.emit("NotificationReplied", move |e| zbus::block_on(Server::notification_replied(e, id, &text)));
+        self.emit("NotificationReplied", move |e| async move { Server::notification_replied(&e, id, &text).await });
     }
 }
