@@ -3,7 +3,8 @@ import Quickshell
 
 // An xdg_popup attached to another Quickshell window (a layer surface through LayerShellQt, or
 // a toplevel). Shown only while its parent window is visible; placement goes to QtWayland's
-// positioner, and a compositor dismissal sets `visible` back to false.
+// positioner, and a compositor dismissal sets `visible` back to false
+// (ProxyWindowBase).
 ProxyWindowBase {
     id: root
     visible: false
@@ -42,6 +43,4 @@ ProxyWindowBase {
         anchor.updateAnchor()
         _place()
     }
-
-    onClosed: visible = false
 }

@@ -44,7 +44,8 @@ QtObject {
     property QW.Window _window: QW.Window {
         id: _window
         onFrameSwapped: if (!root._mapped) root._mapped = true
-        onVisibleChanged: if (!visible) { root._mapped = false; if (!root._hiding) root.closed() }
+        // Closed from outside: like upstream, `visible` turns false before `closed`.
+        onVisibleChanged: if (!visible) { root._mapped = false; if (!root._hiding) { root.visible = false; root.closed() } }
         width: root.implicitWidth
         height: root.implicitHeight
         color: root.color
