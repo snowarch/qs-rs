@@ -13,6 +13,7 @@ quickshell_wayland = { path = "../quickshell-wayland" }
 quickshell_hyprland = { path = "../quickshell-hyprland" }
 quickshell_services_pipewire = { path = "../quickshell-services-pipewire" }
 quickshell_services_upower = { path = "../quickshell-services-upower" }
+quickshell_bluetooth = { path = "../quickshell-bluetooth" }
 
 [build-dependencies]
 cxx-qt-build.workspace = true

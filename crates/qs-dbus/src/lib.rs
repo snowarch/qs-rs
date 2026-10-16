@@ -111,3 +111,32 @@ mod tests {
         assert_eq!(props_json(props.iter().map(|(k, v)| (k, &**v))), r#"{"Percentage":42.5,"Model":"a\"b"}"#);
     }
 }
+
+pub mod object_manager;
+
+/// A property value to write, typed the way the remote interface declares it.
+pub enum SetValue {
+    Bool(bool),
+    U32(u32),
+    Str(String),
+}
+
+/// org.freedesktop.DBus.Properties.Set, blocking.
+pub fn set_property(conn: &zbus::blocking::Connection, service: &str, path: &str, iface: &str, name: &str, value: SetValue) -> zbus::Result<()> {
+    let proxy = zbus::blocking::Proxy::new(conn, service.to_string(), path.to_string(), "org.freedesktop.DBus.Properties")?;
+    let value = match value {
+        SetValue::Bool(b) => Value::Bool(b),
+        SetValue::U32(u) => Value::U32(u),
+        SetValue::Str(s) => Value::from(s),
+    };
+    proxy.call("Set", &(iface, name, value))
+}
+
+/// Calls a method with no arguments, or with one object path argument.
+pub fn call(conn: &zbus::blocking::Connection, service: &str, path: &str, iface: &str, method: &str, object_arg: Option<&str>) -> zbus::Result<()> {
+    let proxy = zbus::blocking::Proxy::new(conn, service.to_string(), path.to_string(), iface.to_string())?;
+    match object_arg {
+        Some(p) => proxy.call(method, &(zbus::zvariant::ObjectPath::try_from(p)?,)),
+        None => proxy.call(method, &()),
+    }
+}
