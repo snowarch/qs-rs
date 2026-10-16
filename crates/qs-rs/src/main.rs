@@ -73,6 +73,46 @@ fn heap_dumps() {
     });
 }
 
+/// Image decoders inir can reach (wallpapers: jpg png webp avif bmp svg gif tiff jxl; PNG and BMP
+/// are built into Qt). Any image without a known suffix makes Qt load every decoder installed to
+/// probe it, and KDE's set pulls in video codecs, RAW, HEIF, EXR and more.
+const IMAGE_FORMATS: &[&str] = &["libqjpeg", "libqgif", "libqwebp", "libqsvg", "libqtiff", "libqavif6", "libqico", "kimg_jxl"];
+
+/// A plugin dir that mirrors Qt's with only `IMAGE_FORMATS` under imageformats, built once per
+/// Qt plugin dir and reused. `QSRS_ALL_IMAGE_FORMATS=1` keeps Qt's own.
+fn curated_plugins() -> Option<PathBuf> {
+    if std::env::var_os("QSRS_ALL_IMAGE_FORMATS").is_some() {
+        return None;
+    }
+    let qt = PathBuf::from(host::ffi::qt_plugins_path());
+    let key = quickshell::instance::path_id(&format!("{}{IMAGE_FORMATS:?}", qt.display()));
+    let dir = runtime_dir().join(format!("plugins-{key}"));
+    if dir.is_dir() {
+        return Some(dir);
+    }
+    let tmp = runtime_dir().join(format!("plugins-{key}.{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(tmp.join("imageformats")).ok()?;
+    for entry in std::fs::read_dir(&qt).ok()?.flatten() {
+        let name = entry.file_name();
+        if name == "imageformats" {
+            for f in std::fs::read_dir(entry.path()).ok()?.flatten() {
+                let stem = f.path().file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                if IMAGE_FORMATS.contains(&stem.as_str()) {
+                    std::os::unix::fs::symlink(f.path(), tmp.join("imageformats").join(f.file_name())).ok()?;
+                }
+            }
+        } else {
+            std::os::unix::fs::symlink(entry.path(), tmp.join(&name)).ok()?;
+        }
+    }
+    // Another instance may have won the race; either copy is the same.
+    if std::fs::rename(&tmp, &dir).is_err() {
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+    dir.is_dir().then_some(dir)
+}
+
 /// Compiles every QML file of the scan through the VFS and prints each distinct error once.
 fn check_shell(scan: &scan::Scan, vfs: &std::path::Path, mut engine: std::pin::Pin<&mut cxx_qt_lib::QQmlEngine>) -> i32 {
     let mut errors = std::collections::BTreeSet::new();
@@ -355,6 +395,9 @@ fn main() {
     let entry = vfs.join(root_file.strip_prefix(&scan.root).unwrap());
 
     heap_dumps();
+    if let Some(dir) = curated_plugins() {
+        host::ffi::set_plugin_path(&qstr(&dir));
+    }
     let mut app = host::ffi::create_app(pragmas.use_qapplication, pragmas.desktop_settings_aware);
     let engine = host::ffi::new_engine(&qstr(&vfs_root));
     if check {

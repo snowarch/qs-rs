@@ -7,6 +7,14 @@
 #include <QtQml/QQmlComponent>
 #include <QtQml/QQmlEngine>
 #include <QtWidgets/QApplication>
+#include <QtCore/QFile>
+#include <QtCore/QLibraryInfo>
+#include <QtCore/QTimer>
+#include <cstdio>
+#include <QtQuick/QQuickItem>
+#include <QtQuick/QQuickWindow>
+#include <QtQml/QQmlContext>
+#include <functional>
 #include <memory>
 #include "rust/cxx.h"
 #include "quickshell/include/log.h"
@@ -14,6 +22,13 @@
 #include "quickshell/include/reload.h"
 
 namespace qsrs {
+inline rust::String qt_plugins_path() {
+	return rust::String(QLibraryInfo::path(QLibraryInfo::PluginsPath).toStdString());
+}
+
+// Replaces Qt's plugin search path (before the application exists).
+inline void set_plugin_path(const QString& path) { QCoreApplication::setLibraryPaths({path}); }
+
 inline std::unique_ptr<QGuiApplication> create_app(bool useQApplication, bool desktopSettingsAware) {
 	static int argc = 1;
 	static char arg0[] = "quickshell";
@@ -47,6 +62,40 @@ private:
 	QString root;
 };
 
+// Measurement aid: QSRS_OBJECT_CENSUS=S prints, every S seconds, live QObjects counted by the QML
+// file whose component created them (top 40) and the total.
+inline void schedule_census(QQmlEngine* engine) {
+	bool ok = false;
+	int every = qEnvironmentVariableIntValue("QSRS_OBJECT_CENSUS", &ok);
+	if (!ok || every <= 0) return;
+	auto* timer = new QTimer(engine);
+	QObject::connect(timer, &QTimer::timeout, engine, [] {
+		QHash<QString, int> byFile;
+		QSet<QObject*> seen;
+		std::function<void(QObject*)> walk = [&](QObject* o) {
+			if (!o || seen.contains(o)) return;
+			seen.insert(o);
+			auto* ctx = qmlContext(o);
+			auto file = ctx ? ctx->baseUrl().fileName() : QString("<c++> ") + o->metaObject()->className();
+			byFile[file]++;
+			for (auto* c: o->children()) walk(c);
+			if (auto* item = qobject_cast<QQuickItem*>(o)) for (auto* c: item->childItems()) walk(c);
+		};
+		for (auto* w: QGuiApplication::allWindows()) {
+			walk(w);
+			if (auto* qw = qobject_cast<QQuickWindow*>(w)) walk(qw->contentItem());
+		}
+		walk(QCoreApplication::instance());
+		QList<QPair<int, QString>> top;
+		for (auto it = byFile.begin(); it != byFile.end(); ++it) top.append({it.value(), it.key()});
+		std::sort(top.begin(), top.end(), [](auto& a, auto& b) { return a.first > b.first; });
+		fprintf(stderr, "qsrs-census total=%lld windows=%lld\n", (long long)seen.size(), (long long)QGuiApplication::allWindows().size());
+		for (int i = 0; i < std::min<int>(40, top.size()); i++)
+			fprintf(stderr, "qsrs-census %6d %s\n", top[i].first, qPrintable(top[i].second));
+	});
+	timer->start(every * 1000);
+}
+
 inline QQmlEngine* new_engine(const QString& importPath) {
 	auto* engine = new QQmlEngine();
 	engine->addImportPath(importPath);
@@ -55,6 +104,7 @@ inline QQmlEngine* new_engine(const QString& importPath) {
 	install_generation(*engine);
 	QObject::connect(engine, &QQmlEngine::quit, QCoreApplication::instance(), &QCoreApplication::quit, Qt::QueuedConnection);
 	QObject::connect(engine, &QQmlEngine::exit, QCoreApplication::instance(), &QCoreApplication::exit, Qt::QueuedConnection);
+	schedule_census(engine);
 	return engine;
 }
 
