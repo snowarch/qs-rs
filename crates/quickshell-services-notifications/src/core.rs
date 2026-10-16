@@ -54,9 +54,9 @@ pub struct NotificationBaseRust {
     transient: bool,
 }
 
-use crate::image::Pixmap;
 use cxx_qt::{CxxQtThread, Threading};
 use cxx_qt_lib::QString;
+use qs_dbus::pixmap::{image_dir, Pixmap};
 use qs_dbus::{json_string, props_json, Worker};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -86,22 +86,6 @@ struct State {
 pub struct NotificationServerCoreRust {
     state: Arc<Mutex<Option<State>>>,
     worker: Arc<OnceLock<Worker>>,
-}
-
-fn image_dir() -> PathBuf {
-    let base = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("qs-rs");
-    // Directories of processes that are gone (crashed or killed) are cleared here.
-    if let Ok(entries) = std::fs::read_dir(&base) {
-        for e in entries.flatten() {
-            let name = e.file_name().to_string_lossy().into_owned();
-            if let Some(pid) = name.strip_prefix("notifications-") {
-                if !PathBuf::from(format!("/proc/{pid}")).exists() {
-                    let _ = std::fs::remove_dir_all(e.path());
-                }
-            }
-        }
-    }
-    base.join(format!("notifications-{}", std::process::id()))
 }
 
 struct Server {
@@ -240,7 +224,7 @@ impl qobject::NotificationServerCore {
             st.capabilities = caps;
             return;
         }
-        *guard = Some(State { next_id: 1, live: HashMap::new(), capabilities: caps, image_seq: 0, image_dir: image_dir() });
+        *guard = Some(State { next_id: 1, live: HashMap::new(), capabilities: caps, image_seq: 0, image_dir: image_dir("notifications") });
         drop(guard);
 
         let (state, worker, qt) = (self.state.clone(), self.worker.clone(), self.qt_thread());

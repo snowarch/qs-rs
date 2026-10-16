@@ -1,6 +1,5 @@
 extern crate cxx_qt_lib;
 pub mod core;
-mod image;
 
 #[cfg(test)]
 mod link_init {

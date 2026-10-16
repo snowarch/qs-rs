@@ -113,6 +113,7 @@ mod tests {
 }
 
 pub mod object_manager;
+pub mod pixmap;
 
 /// A property value to write, typed the way the remote interface declares it.
 pub enum SetValue {
