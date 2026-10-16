@@ -56,6 +56,23 @@ pub fn malloc_stats() -> Option<(usize, usize)> {
     }
 }
 
+/// Measurement aid: `QSRS_HEAP_DUMP=15,60` writes a jemalloc heap profile at those seconds after
+/// start (needs `MALLOC_CONF=prof:true,prof_prefix:...`; read with jeprof).
+fn heap_dumps() {
+    let Ok(spec) = std::env::var("QSRS_HEAP_DUMP") else { return };
+    let mut at: Vec<u64> = spec.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+    at.sort_unstable();
+    let _ = std::thread::Builder::new().name("qs-heapdump".into()).spawn(move || {
+        let start = std::time::Instant::now();
+        for s in at {
+            std::thread::sleep(std::time::Duration::from_secs(s).saturating_sub(start.elapsed()));
+            unsafe { mallctl(c"prof.dump".as_ptr(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), 0) };
+            let (a, r) = malloc_stats().unwrap_or_default();
+            eprintln!("qsrs-mem t={s}s allocated={}MB resident={}MB", a >> 20, r >> 20);
+        }
+    });
+}
+
 /// Compiles every QML file of the scan through the VFS and prints each distinct error once.
 fn check_shell(scan: &scan::Scan, vfs: &std::path::Path, mut engine: std::pin::Pin<&mut cxx_qt_lib::QQmlEngine>) -> i32 {
     let mut errors = std::collections::BTreeSet::new();
@@ -337,6 +354,7 @@ fn main() {
     scan.write_vfs(&vfs).expect("vfs write failed");
     let entry = vfs.join(root_file.strip_prefix(&scan.root).unwrap());
 
+    heap_dumps();
     let mut app = host::ffi::create_app(pragmas.use_qapplication, pragmas.desktop_settings_aware);
     let engine = host::ffi::new_engine(&qstr(&vfs_root));
     if check {
