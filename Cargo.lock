@@ -1053,6 +1053,7 @@ dependencies = [
  "quickshell_services_notifications",
  "quickshell_services_pam",
  "quickshell_services_pipewire",
+ "quickshell_services_polkit",
  "quickshell_services_systemtray",
  "quickshell_services_upower",
  "quickshell_wayland",
@@ -1225,6 +1226,20 @@ dependencies = [
  "cxx-qt-lib",
  "pipewire",
  "quickshell",
+]
+
+[[package]]
+name = "quickshell_services_polkit"
+version = "0.1.0"
+dependencies = [
+ "cxx",
+ "cxx-qt",
+ "cxx-qt-build",
+ "cxx-qt-lib",
+ "libc",
+ "qs_dbus",
+ "quickshell",
+ "zbus",
 ]
 
 [[package]]
