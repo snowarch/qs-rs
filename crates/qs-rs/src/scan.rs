@@ -41,9 +41,6 @@ impl Scan {
         let mut names: Vec<String> =
             rd.flatten().filter(|e| e.path().is_file()).map(|e| e.file_name().to_string_lossy().into_owned()).collect();
         names.sort();
-        if names.iter().any(|n| n == "qmldir") {
-            return;
-        }
         let mut entries = Vec::new();
         for name in &names {
             if name.starts_with(|c: char| c.is_uppercase()) && name.ends_with(".qml") {
@@ -51,6 +48,10 @@ impl Scan {
                     entries.push((name.clone(), info));
                 }
             }
+        }
+        // A shell-provided qmldir wins; its files are still scanned for imports.
+        if names.iter().any(|n| n == "qmldir") {
+            return;
         }
         let mut qmldir = String::new();
         if let Ok(rel) = dir.strip_prefix(&self.root) {
@@ -122,7 +123,6 @@ impl Scan {
         if vfs.exists() {
             fs::remove_dir_all(vfs)?;
         }
-        let scanned: BTreeSet<&Path> = self.dirs.iter().map(|d| d.as_path()).collect();
         // Every ancestor of a scanned dir inside the root must be a real dir too.
         let mut real: BTreeSet<PathBuf> = BTreeSet::new();
         for d in &self.dirs {
@@ -141,7 +141,7 @@ impl Scan {
             fs::create_dir_all(&out)?;
             for entry in fs::read_dir(dir)?.flatten() {
                 let src = entry.path();
-                if real.contains(&src) || src.file_name().is_some_and(|n| n == "qmldir" && scanned.contains(dir.as_path())) {
+                if real.contains(&src) || self.intercepts.contains_key(&src) {
                     continue;
                 }
                 std::os::unix::fs::symlink(&src, out.join(entry.file_name()))?;
@@ -199,3 +199,4 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 }
+
