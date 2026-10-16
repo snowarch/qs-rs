@@ -30,6 +30,28 @@ pub fn connection() -> Option<Connection> {
     .clone()
 }
 
+/// Name of the QScreen showing this wl_output (one of Qt's own proxies, as received in events
+/// that carry outputs), or an empty string. Qt thread only.
+pub fn screen_name_for_output(output: &wayland_client::protocol::wl_output::WlOutput) -> String {
+    use wayland_client::Proxy;
+    qt::ffi::screen_name_for_output(output.id().as_ptr() as usize).to_string()
+}
+
+/// Qt's wl_output proxy for the screen named `name`. Qt thread only.
+pub fn output_for_screen_name(name: &str) -> Option<wayland_client::protocol::wl_output::WlOutput> {
+    use wayland_client::Proxy;
+    let ptr = qt::ffi::output_for_screen_name(&cxx_qt_lib::QString::from(name));
+    if ptr == 0 {
+        return None;
+    }
+    // SAFETY: Qt keeps this wl_output proxy alive while its QScreen exists.
+    let id = unsafe {
+        wayland_client::backend::ObjectId::from_ptr(wayland_client::protocol::wl_output::WlOutput::interface(), ptr as *mut _)
+    }
+    .ok()?;
+    wayland_client::protocol::wl_output::WlOutput::from_id(&connection()?, id).ok()
+}
+
 /// Dispatches `queue` on a new thread for the rest of the program.
 pub fn spawn_dispatch<S: Send + 'static>(name: &str, mut queue: EventQueue<S>, mut state: S) {
     std::thread::Builder::new()

@@ -1,7 +1,9 @@
-//! Quickshell.Wayland: layer shell attached properties (include/layershell.h).
+//! Quickshell.Wayland: layer shell attached properties (include/layershell.h), idle monitor and
+//! foreign toplevels.
 extern crate cxx_qt_lib;
 extern crate quickshell;
 pub mod idle;
+pub mod toplevel;
 
 #[cfg(test)]
 mod link_init {
