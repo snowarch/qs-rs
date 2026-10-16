@@ -8,6 +8,7 @@ extern crate quickshell_bluetooth;
 extern crate quickshell_services_mpris;
 extern crate quickshell_services_notifications;
 extern crate quickshell_services_systemtray;
+extern crate quickshell_services_pam;
 extern crate quickshell_widgets;
 
 mod host;
@@ -87,6 +88,11 @@ fn ipc_main(root_file: &std::path::Path, pragmas: &launch::Pragmas, args: &[Stri
 }
 
 fn main() {
+    // PamContext re-executes qs-rs as its authentication helper process.
+    let argv: Vec<String> = std::env::args().collect();
+    if argv.get(1).map(String::as_str) == Some(quickshell_services_pam::helper::HELPER_ARG) {
+        std::process::exit(quickshell_services_pam::helper::main(&argv[2..]));
+    }
     quickshell::common::capture_initial_env();
     cxx_qt::init_crate!(quickshell);
     cxx_qt::init_crate!(quickshell_io);
@@ -98,6 +104,7 @@ fn main() {
     cxx_qt::init_crate!(quickshell_services_mpris);
     cxx_qt::init_crate!(quickshell_services_notifications);
     cxx_qt::init_crate!(quickshell_services_systemtray);
+    cxx_qt::init_crate!(quickshell_services_pam);
     cxx_qt::init_crate!(quickshell_widgets);
 
     let mut args = std::env::args().skip(1).peekable();
