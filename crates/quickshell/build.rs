@@ -15,7 +15,8 @@ fn main() {
     .cpp_file("include/objectmodel.h")
     .cpp_file("include/reload.h")
     .cpp_file("include/lazyloader.h")
-    .files(["src/global.rs", "src/util.rs", "src/colorquantizer.rs"])
+    .cpp_file("include/desktopentry.h")
+    .files(["src/global.rs", "src/util.rs", "src/colorquantizer.rs", "src/desktopentry.rs"])
     .build()
     .export();
 }
