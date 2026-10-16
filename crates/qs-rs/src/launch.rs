@@ -1,0 +1,105 @@
+//! Launch-time configuration read from `//@ pragma` lines at the top of the root shell file,
+//! applied before Qt starts (same set and rules as Quickshell's launch.cpp).
+
+#[derive(Debug, Default, PartialEq)]
+pub struct Pragmas {
+    pub use_qapplication: bool,
+    pub native_text_rendering: bool,
+    pub desktop_settings_aware: bool,
+    pub use_system_style: bool,
+    pub drop_expensive_fonts: bool,
+    pub icon_theme: Option<String>,
+    pub app_id: Option<String>,
+    pub shell_id: Option<String>,
+    pub data_dir: Option<String>,
+    pub state_dir: Option<String>,
+    pub cache_dir: Option<String>,
+    pub env: Vec<(String, String)>,
+    pub default_env: Vec<(String, String)>,
+}
+
+pub fn parse(text: &str) -> Result<Pragmas, String> {
+    let mut p = Pragmas { desktop_settings_aware: true, ..Default::default() };
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with("import") {
+            break;
+        }
+        let Some(pragma) = line.strip_prefix("//@ pragma ") else { continue };
+        let pragma = pragma.trim();
+        let arg = |name: &str| pragma.strip_prefix(name).map(|v| v.trim().to_string());
+        if let Some(kv) = arg("Env ").or_else(|| arg("DefaultEnv ")) {
+            let (k, v) = kv.split_once('=').ok_or_else(|| format!("Env pragma {pragma:?} not in the form 'VAR = VALUE'"))?;
+            let entry = (k.trim().to_string(), v.trim().to_string());
+            if pragma.starts_with("Env ") { p.env.push(entry) } else { p.default_env.push(entry) }
+        } else if pragma == "UseQApplication" {
+            p.use_qapplication = true;
+        } else if pragma == "NativeTextRendering" {
+            p.native_text_rendering = true;
+        } else if pragma == "IgnoreSystemSettings" {
+            p.desktop_settings_aware = false;
+        } else if pragma == "RespectSystemStyle" {
+            p.use_system_style = true;
+        } else if pragma == "DropExpensiveFonts" {
+            p.drop_expensive_fonts = true;
+        } else if let Some(v) = arg("IconTheme ") {
+            p.icon_theme = Some(v);
+        } else if let Some(v) = arg("AppId ") {
+            p.app_id = Some(v);
+        } else if let Some(v) = arg("ShellId ") {
+            p.shell_id = Some(v);
+        } else if let Some(v) = arg("DataDir ") {
+            p.data_dir = Some(v);
+        } else if let Some(v) = arg("StateDir ") {
+            p.state_dir = Some(v);
+        } else if let Some(v) = arg("CacheDir ") {
+            p.cache_dir = Some(v);
+        } else {
+            eprintln!("Unrecognized pragma {pragma:?}");
+        }
+    }
+    Ok(p)
+}
+
+/// Applies the environment side of the pragmas. Must run before any thread or Qt object exists.
+pub fn apply_env(p: &Pragmas) {
+    // SAFETY: called from main before other threads are spawned.
+    unsafe {
+        if !p.use_system_style {
+            std::env::remove_var("QT_STYLE_OVERRIDE");
+            std::env::set_var("QT_QUICK_CONTROLS_STYLE", "Fusion");
+        }
+        for (k, v) in &p.default_env {
+            if std::env::var_os(k).is_none() {
+                std::env::set_var(k, v);
+            }
+        }
+        for (k, v) in &p.env {
+            std::env::set_var(k, v);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_inir_header() {
+        let p = parse(
+            "//@ pragma UseQApplication\n//@ pragma ShellId inir\n//-@ pragma EnableQtWebEngineQuick\n\
+             //@ pragma Env QS_NO_RELOAD_POPUP=1\n//@ pragma DefaultEnv QT_LOGGING_RULES=a=false;b=false\n\
+             import QtQuick\n//@ pragma ShellId ignored\n",
+        )
+        .unwrap();
+        assert!(p.use_qapplication);
+        assert_eq!(p.shell_id.as_deref(), Some("inir"));
+        assert_eq!(p.env, vec![("QS_NO_RELOAD_POPUP".into(), "1".into())]);
+        assert_eq!(p.default_env, vec![("QT_LOGGING_RULES".into(), "a=false;b=false".into())]);
+    }
+
+    #[test]
+    fn rejects_env_without_equals() {
+        assert!(parse("//@ pragma Env NOPE\n").is_err());
+    }
+}

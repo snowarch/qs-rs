@@ -64,7 +64,7 @@ pub mod qobject {
 }
 
 use crate::datastream::Parser;
-use crate::proc::{Context, Event, Spawned};
+use quickshell::proc::{Context, Event, Spawned};
 use core::pin::Pin;
 use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::{QHash, QHashPair_QString_QVariant, QString, QStringList, QVariant};
@@ -116,7 +116,7 @@ impl Default for ProcessRust {
 impl Drop for ProcessRust {
     fn drop(&mut self) {
         if let Some(pid) = self.pid {
-            crate::proc::kill(pid, libc::SIGKILL);
+            quickshell::proc::kill(pid, libc::SIGKILL);
         }
     }
 }
@@ -127,7 +127,7 @@ impl qobject::Process {
         if running {
             self.queue_start();
         } else if let Some(pid) = self.pid {
-            crate::proc::kill(pid, libc::SIGTERM);
+            quickshell::proc::kill(pid, libc::SIGTERM);
         }
     }
 
@@ -192,7 +192,7 @@ impl qobject::Process {
         Context {
             command: self.command.iter().map(|s| s.to_string()).collect(),
             working_directory: self.working_directory.to_string(),
-            environment: crate::proc::env_from_hash(&self.environment),
+            environment: quickshell::proc::env_from_hash(&self.environment),
             clear_environment: self.clear_environment,
         }
     }
@@ -210,7 +210,7 @@ impl qobject::Process {
         let run_id = rust.run_id;
         let (want_out, want_err, want_in) = (!rust.stdout.is_null(), !rust.stderr.is_null(), rust.stdin_enabled);
         let qt = self.qt_thread();
-        let spawned = crate::proc::spawn(&ctx, want_out, want_err, want_in, move |event| {
+        let spawned = quickshell::proc::spawn(&ctx, want_out, want_err, want_in, move |event| {
             let _ = qt.queue(move |this| this.on_event(run_id, event));
         });
         match spawned {
@@ -273,7 +273,7 @@ impl qobject::Process {
 
     fn exec(mut self: Pin<&mut Self>, context: &QVariant) {
         self.as_mut().set_running(false);
-        let ctx = crate::proc::context_from_variant(context);
+        let ctx = quickshell::proc::context_from_variant(context);
         if let Some(cmd) = ctx.command {
             let list: QStringList = cmd.iter().map(|s| QString::from(s.as_str())).collect();
             self.as_mut().set_command(list);
@@ -296,7 +296,7 @@ impl qobject::Process {
 
     fn signal(self: Pin<&mut Self>, signal: i32) {
         if let Some(pid) = self.pid {
-            crate::proc::kill(pid, signal);
+            quickshell::proc::kill(pid, signal);
         }
     }
 
@@ -311,6 +311,6 @@ impl qobject::Process {
             eprintln!("Cannot start process as command is empty.");
             return;
         }
-        crate::proc::spawn_detached(&self.context());
+        quickshell::proc::spawn_detached(&self.context());
     }
 }

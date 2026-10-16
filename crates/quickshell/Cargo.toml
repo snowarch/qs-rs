@@ -8,6 +8,7 @@ links = "quickshell"
 cxx.workspace = true
 cxx-qt.workspace = true
 cxx-qt-lib.workspace = true
+libc = "0.2"
 
 [build-dependencies]
 cxx-qt-build.workspace = true

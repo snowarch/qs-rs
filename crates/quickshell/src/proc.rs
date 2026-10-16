@@ -35,7 +35,7 @@ fn command(ctx: &Context) -> Command {
     if !ctx.working_directory.is_empty() {
         cmd.current_dir(&ctx.working_directory);
     }
-    let initial = quickshell::common::initial_env();
+    let initial = crate::common::initial_env();
     cmd.env_clear();
     let mut env: Vec<(String, String)> = if ctx.clear_environment { Vec::new() } else { initial.to_vec() };
     for (name, value) in &ctx.environment {
