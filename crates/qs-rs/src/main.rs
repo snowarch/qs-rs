@@ -222,6 +222,10 @@ fn main() {
     if argv.get(1).map(String::as_str) == Some(quickshell_services_pam::helper::HELPER_ARG) {
         std::process::exit(quickshell_services_pam::helper::main(&argv[2..]));
     }
+    // Shells find their instance by process name (`pgrep -x qs`, inir's close-window.sh), as
+    // upstream's binary is `qs`. Threads started later inherit it. Mesa app profiles match the
+    // executable name, not this.
+    let _ = std::fs::write("/proc/self/comm", "qs");
     quickshell::common::capture_initial_env();
     cxx_qt::init_crate!(quickshell);
     cxx_qt::init_crate!(quickshell_io);
