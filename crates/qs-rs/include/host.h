@@ -54,6 +54,8 @@ inline bool start_qml_debug_server(int port, bool block) {
 	    port, block ? QQmlDebuggingEnabler::WaitForClient : QQmlDebuggingEnabler::DoNotWaitForClient);
 }
 
+inline rust::String qt_build_version() { return rust::String(QT_VERSION_STR); }
+
 inline rust::String qt_plugins_path() {
 	return rust::String(QLibraryInfo::path(QLibraryInfo::PluginsPath).toStdString());
 }

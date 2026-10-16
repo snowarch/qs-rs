@@ -404,6 +404,73 @@ pub fn request<T>(instance_id: &str, cmd: &Command, read: impl Fn(u8, &mut Reade
     }
 }
 
+/// Like `request`, for commands answered by a stream of replies (`ipc listen`): `on_reply` gets
+/// each one and returns whether to keep reading.
+pub fn stream<T>(
+    instance_id: &str,
+    cmd: &Command,
+    read: impl Fn(u8, &mut Reader) -> Result<T, Incomplete>,
+    mut on_reply: impl FnMut(T) -> bool,
+) -> std::io::Result<()> {
+    let mut stream = UnixStream::connect(quickshell::instance::ipc_path(instance_id))?;
+    stream.write_all(&cmd.encode())?;
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        let n = stream.read(&mut chunk)?;
+        if n == 0 {
+            return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "connection closed"));
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        loop {
+            let mut r = Reader::new(&buf);
+            let Ok(v) = r.u8().and_then(|i| read(i, &mut r)) else { break };
+            buf.drain(..r.pos);
+            if !on_reply(v) {
+                return Ok(());
+            }
+        }
+    }
+}
+
+/// `qs kill`: asks the instance to quit and waits for it to close the socket.
+pub fn kill(instance_id: &str, timeout: std::time::Duration) -> std::io::Result<()> {
+    let mut stream = UnixStream::connect(quickshell::instance::ipc_path(instance_id))?;
+    stream.write_all(&Command::Kill.encode())?;
+    stream.set_read_timeout(Some(timeout))?;
+    let mut chunk = [0u8; 256];
+    loop {
+        match stream.read(&mut chunk) {
+            Ok(0) => return Ok(()),
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => return Ok(()),
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// Reads a `prop get` reply: the value, or the error message.
+pub fn read_property_reply(index: u8, r: &mut Reader) -> Result<Result<String, String>, Incomplete> {
+    Ok(match index {
+        4 => Ok(r.string()?),
+        TARGET_NOT_FOUND => Err("Target not found.".into()),
+        ENTRY_NOT_FOUND => Err("Property not found.".into()),
+        1 => Err("Not ready to accept queries yet.".into()),
+        _ => Err("Received invalid IPC response.".into()),
+    })
+}
+
+/// Reads one `listen`/`wait` reply: a signal's value, or the error message.
+pub fn read_listen_reply(index: u8, r: &mut Reader) -> Result<Result<String, String>, Incomplete> {
+    Ok(match index {
+        4 => Ok(r.string()?),
+        TARGET_NOT_FOUND => Err("Target not found.".into()),
+        ENTRY_NOT_FOUND => Err("Signal not found.".into()),
+        1 => Err("Not ready to accept queries yet.".into()),
+        _ => Err("Received invalid IPC response.".into()),
+    })
+}
+
 /// Reads a call reply: Ok(Some(text)) for a value, Ok(None) for void, Err(message) otherwise.
 pub fn read_call_reply(index: u8, r: &mut Reader, args: usize) -> Result<Result<Option<String>, String>, Incomplete> {
     Ok(match index {

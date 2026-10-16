@@ -191,7 +191,7 @@ pub fn check_lock(dir: &Path) -> Option<(i32, InstanceInfo)> {
 }
 
 /// Instances under a by-path/by-shell dir: (live on `display` or any display when empty,
-/// live on another display, dead), like upstream collectInstances.
+/// live on another display, dead), unsorted, like upstream collectInstances.
 pub fn collect(dir: &Path, display: &str) -> (Vec<InstanceInfo>, Vec<InstanceInfo>, Vec<InstanceInfo>) {
     let (mut live, mut other, mut dead) = (vec![], vec![], vec![]);
     let Ok(entries) = std::fs::read_dir(dir) else { return (live, other, dead) };
@@ -208,7 +208,6 @@ pub fn collect(dir: &Path, display: &str) -> (Vec<InstanceInfo>, Vec<InstanceInf
             live.push(info);
         }
     }
-    live.sort_by_key(|i| std::cmp::Reverse(i.launch_time_ms));
     (live, other, dead)
 }
 

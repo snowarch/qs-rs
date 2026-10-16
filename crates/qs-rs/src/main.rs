@@ -12,6 +12,8 @@ extern crate quickshell_services_pam;
 extern crate quickshell_dbusmenu;
 extern crate quickshell_widgets;
 
+mod cli;
+mod command;
 mod host;
 mod launch;
 mod scan;
@@ -146,128 +148,67 @@ fn qstr(p: &std::path::Path) -> QString {
     QString::from(&*p.to_string_lossy())
 }
 
-const USAGE: &str = "usage: qs-rs [-p <path> | -c <name>] [-n] [-v] [--no-color] [--log-times] [--log-rules <rules>]\n\
-    [ipc (call <target> <function> [args...] | show) | check | log [file] [-t <n>] [-f] [-r <rules>]]";
-
-/// Resolves the shell file like quickshell: `-p` file or directory, `-c` a named config under
-/// `$XDG_CONFIG_HOME/quickshell/`, or a bare path argument. Returns the absolute path as given
-/// (what upstream hashes into the shell and path ids) and the real path (what gets scanned).
-fn resolve_shell(path: Option<String>, name: Option<String>) -> (PathBuf, PathBuf) {
-    let candidate = match (path, name) {
-        (Some(p), _) => PathBuf::from(p),
-        (None, Some(n)) => {
-            let base = std::env::var_os("XDG_CONFIG_HOME")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".config"));
-            base.join("quickshell").join(n)
-        }
-        (None, None) => {
-            eprintln!("{USAGE}");
-            std::process::exit(1);
-        }
-    };
-    let file = if candidate.is_dir() { candidate.join("shell.qml") } else { candidate };
-    match std::fs::canonicalize(&file) {
-        Ok(real) => (quickshell::instance::absolute_path(&file), real),
-        Err(_) => {
-            eprintln!("Could not find shell file {}", file.display());
-            std::process::exit(1);
-        }
-    }
-}
-
 fn shell_id_for(config: &std::path::Path, pragmas: &launch::Pragmas) -> String {
     pragmas.shell_id.clone().unwrap_or_else(|| quickshell::instance::path_id(&config.to_string_lossy()))
 }
 
-/// Newest live instance of this config on this display (upstream selectInstance by path).
-fn select_instance(config: &std::path::Path) -> quickshell::instance::InstanceInfo {
-    use quickshell::instance;
-    let dir = instance::base_run_dir().join("by-path").join(instance::path_id(&config.to_string_lossy()));
-    let (live, other, _) = instance::collect(&dir, &instance::display_connection());
-    match live.into_iter().next() {
-        Some(i) => i,
-        None => {
-            eprintln!("No running instances for \"{}\"", config.display());
-            if !other.is_empty() {
-                eprintln!("Found instances on other displays, use --any-display to show them.");
-            }
-            std::process::exit(255);
-        }
-    }
-}
+/// `-d`: write end of the pipe the waiting parent reads the launch result from.
+static DAEMON_PIPE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
 
-/// `log`: decodes the newest instance's (live, else dead) detailed log, or a given file.
-fn log_main(config: Option<&std::path::Path>, args: &[String], mut color: bool, mut timestamps: bool) -> ! {
-    use quickshell::instance;
-    let (mut file, mut tail, mut follow, mut rules) = (None, 0usize, false, String::new());
-    let mut it = args.iter();
-    while let Some(a) = it.next() {
-        match a.as_str() {
-            "-t" | "--tail" => tail = it.next().and_then(|n| n.parse().ok()).unwrap_or(0),
-            "-f" | "--follow" => follow = true,
-            "--no-color" => color = false,
-            "--log-times" => timestamps = true,
-            "-r" | "--rules" => rules = it.next().cloned().unwrap_or_default(),
-            _ if a.starts_with("--rules=") => rules = a["--rules=".len()..].to_string(),
-            _ if file.is_none() && !a.starts_with('-') => file = Some(std::path::PathBuf::from(a)),
-            _ => {
-                eprintln!("{USAGE}");
+/// Forks like upstream's `--daemonize`: the child leaves the session and goes on; the parent
+/// exits with the code the child reports once the config is loaded (or it failed).
+fn daemonize() {
+    let mut fds = [0i32; 2];
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } == -1 {
+        eprintln!("Failed to create messaging pipes for daemon: {}", std::io::Error::last_os_error());
+        std::process::exit(1);
+    }
+    match unsafe { libc::fork() } {
+        -1 => {
+            eprintln!("Failed to fork daemon: {}", std::io::Error::last_os_error());
+            std::process::exit(1);
+        }
+        0 => {
+            unsafe { libc::close(fds[0]) };
+            DAEMON_PIPE.store(fds[1], std::sync::atomic::Ordering::Relaxed);
+            if unsafe { libc::setsid() } == -1 {
+                eprintln!("Failed to setsid: {}", std::io::Error::last_os_error());
                 std::process::exit(1);
             }
+            // jemalloc stops its purge thread in a forked child; start it again.
+            let mut on = true;
+            unsafe { mallctl(c"background_thread".as_ptr(), std::ptr::null_mut(), std::ptr::null_mut(), (&raw mut on).cast(), size_of::<bool>()) };
+        }
+        _ => {
+            unsafe { libc::close(fds[1]) };
+            let mut code: i32 = 0;
+            let n = unsafe { libc::read(fds[0], (&raw mut code).cast(), size_of::<i32>()) };
+            if n != size_of::<i32>() as isize {
+                // Upstream exits 0 here; a child that died before reporting is a failure.
+                eprintln!("Failed to wait for daemon launch (it may have crashed)");
+                std::process::exit(1);
+            }
+            std::process::exit(code);
         }
     }
-    let path = match (file, config) {
-        (Some(f), _) => f,
-        (None, Some(config)) => {
-            let dir = instance::base_run_dir().join("by-path").join(instance::path_id(&config.to_string_lossy()));
-            let (live, _, mut dead) = instance::collect(&dir, &instance::display_connection());
-            dead.sort_by_key(|i| std::cmp::Reverse(i.launch_time_ms));
-            match live.into_iter().next().or_else(|| dead.into_iter().next()) {
-                Some(i) => instance::base_run_dir().join("by-id").join(i.instance_id).join("log.qslog"),
-                None => {
-                    eprintln!("No running instances for \"{}\"", config.display());
-                    std::process::exit(255);
-                }
-            }
-        }
-        (None, None) => {
-            eprintln!("{USAGE}");
-            std::process::exit(1);
-        }
-    };
-    std::process::exit(quickshell::log::read_file(&path, tail, follow, &rules, color, timestamps));
 }
 
-fn ipc_main(config: &std::path::Path, args: &[String]) -> ! {
-    use quickshell_io::ipc::{Command, read_call_reply, read_query_reply, request};
-    let id = select_instance(config).instance_id;
-    let result = match args.first().map(String::as_str) {
-        Some("call") if args.len() >= 3 => {
-            let n = args.len() - 3;
-            let cmd = Command::Call { target: args[1].clone(), function: args[2].clone(), args: args[3..].to_vec() };
-            request(&id, &cmd, |i, r| read_call_reply(i, r, n)).map(|r| r.map(|v| v.unwrap_or_default()))
-        }
-        Some("show") => request(&id, &Command::Query { target: String::new(), name: String::new() }, read_query_reply),
-        _ => {
-            eprintln!("{USAGE}");
-            std::process::exit(1);
-        }
-    };
-    match result {
-        Ok(Ok(text)) => {
-            if !text.is_empty() {
-                println!("{text}");
+/// Reports `code` to the parent of a daemonized instance and detaches stdio (upstream
+/// exitDaemon). No-op otherwise or when already reported.
+fn exit_daemon(code: i32) {
+    let fd = DAEMON_PIPE.swap(-1, std::sync::atomic::Ordering::Relaxed);
+    if fd == -1 {
+        return;
+    }
+    unsafe {
+        libc::write(fd, (&raw const code).cast(), size_of::<i32>());
+        libc::close(fd);
+        let null = libc::open(c"/dev/null".as_ptr(), libc::O_RDWR);
+        if null != -1 {
+            for std_fd in 0..3 {
+                libc::dup2(null, std_fd);
             }
-            std::process::exit(0)
-        }
-        Ok(Err(msg)) => {
-            eprintln!("{msg}");
-            std::process::exit(255)
-        }
-        Err(e) => {
-            eprintln!("Could not reach instance {id}: {e}");
-            std::process::exit(255)
+            libc::close(null);
         }
     }
 }
@@ -283,7 +224,60 @@ fn main() {
     // upstream's binary is `qs`. Threads started later inherit it. Mesa app profiles match the
     // executable name, not this.
     let _ = std::fs::write("/proc/self/comm", "qs");
-    quickshell::common::capture_initial_env();
+    let cli = match cli::parse(argv.into_iter().skip(1)) {
+        Ok(c) => c,
+        Err(cli::Exit { code: 0, text }) => {
+            println!("{text}");
+            return;
+        }
+        Err(cli::Exit { code, text }) => {
+            eprintln!("{text}");
+            std::process::exit(code);
+        }
+    };
+    if cli.check_compat {
+        if let Some((running, built)) = command::qt_mismatch() {
+            println!(
+                "\x1b[31mCOMPATIBILITY WARNING: qs-rs was built against Qt {built} but the system has updated to Qt {running} \
+                 without rebuilding the package. This is likely to cause crashes, so you must rebuild qs-rs.\n\x1b[0m"
+            );
+            std::process::exit(1);
+        }
+        return;
+    }
+    let launching = !cli.version && cli.cmd == cli::Command::Launch;
+    // Before the fork: an instance already running ends here, like upstream's child would.
+    let located = if launching || (!cli.version && cli.cmd == cli::Command::Check) {
+        match command::locate_config_file(&cli) {
+            Ok(c) => Some(c),
+            Err(()) => std::process::exit(255),
+        }
+    } else {
+        None
+    };
+    if launching && cli.no_duplicate && command::select_instance(&cli, false, false).is_ok() {
+        println!("An instance of this configuration is already running.");
+        return;
+    }
+    // Has to happen before Qt or any thread of ours starts.
+    if cli.daemonize && launching {
+        daemonize();
+    }
+    let color = !cli.no_color && std::env::var("NO_COLOR").map_or(true, |v| v.is_empty());
+    quickshell::log::configure(&cli.log_rules, cli.verbosity, color, cli.log_times, cli.sparse);
+    let code = match &cli.cmd {
+        _ if cli.version => command::print_version(cli.verbosity),
+        cli::Command::Log { file, tail, follow, rules } => command::log(&cli, file.as_deref(), *tail, *follow, rules),
+        cli::Command::List => command::list(&cli),
+        cli::Command::Kill => command::kill(&cli),
+        cli::Command::Ipc(ipc) => command::ipc(&cli, ipc),
+        cli::Command::Launch | cli::Command::Check => run_shell(&cli, located.unwrap(), started),
+    };
+    exit_daemon(code);
+    std::process::exit(code);
+}
+
+fn run_shell(cli: &cli::Cli, config: PathBuf, started: std::time::Instant) -> i32 {
     cxx_qt::init_crate!(quickshell);
     cxx_qt::init_crate!(quickshell_io);
     cxx_qt::init_crate!(quickshell_wayland);
@@ -297,64 +291,46 @@ fn main() {
     cxx_qt::init_crate!(quickshell_services_pam);
     cxx_qt::init_crate!(quickshell_dbusmenu);
     cxx_qt::init_crate!(quickshell_widgets);
-
-    let mut args = std::env::args().skip(1).peekable();
-    let (mut path, mut name, mut rest, mut no_duplicate) = (None, None, Vec::new(), false);
-    let (mut verbosity, mut color, mut log_times, mut log_rules) = (0u32, true, false, String::new());
-    while let Some(a) = args.next() {
-        match a.as_str() {
-            "-p" | "--path" => path = args.next(),
-            "-c" | "--config" => name = args.next(),
-            "-n" | "--no-duplicate" => no_duplicate = true,
-            "-v" | "--verbose" => verbosity += 1,
-            "-vv" => verbosity += 2,
-            "--no-color" => color = false,
-            "--log-times" => log_times = true,
-            "--log-rules" => log_rules = args.next().unwrap_or_default(),
-            "-h" | "--help" => {
-                println!("{USAGE}");
-                return;
-            }
-            _ if rest.is_empty() && path.is_none() && a.ends_with(".qml") => path = Some(a),
-            _ => {
-                rest.push(a);
-                // Everything after a subcommand belongs to it.
-                rest.extend(args.by_ref());
-            }
-        }
-    }
-    quickshell::log::configure(&log_rules, verbosity, color, log_times);
-    if rest.first().is_some_and(|a| a == "log") {
-        let config = (path.is_some() || name.is_some()).then(|| resolve_shell(path, name).0);
-        log_main(config.as_deref(), &rest[1..], color, log_times);
-    }
+    quickshell::common::capture_initial_env();
     host::ffi::install_message_handler();
     host::ffi::install_crash_handler();
-    let (config, root_file) = resolve_shell(path, name);
-    let text = std::fs::read_to_string(&root_file).expect("could not read shell file");
+    let root_file = match std::fs::canonicalize(&config) {
+        Ok(real) => real,
+        Err(e) => {
+            eprintln!("Could not open config file at {:?}: {e}", config.display().to_string());
+            return 255;
+        }
+    };
+    let text = match std::fs::read_to_string(&root_file) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("Could not read {:?}: {e}", root_file.display().to_string());
+            return 255;
+        }
+    };
     let pragmas = match launch::parse(&text) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("{e}");
-            std::process::exit(1);
+            return 1;
         }
     };
-    if rest.first().is_some_and(|a| a == "ipc") {
-        ipc_main(&config, &rest[1..]);
-    }
     let shell_id = shell_id_for(&config, &pragmas);
     // `check`: compile every QML file the shell reaches, report errors, start nothing.
-    let check = rest.first().is_some_and(|a| a == "check");
+    let check = cli.cmd == cli::Command::Check;
     if check && std::env::var_os("QT_QPA_PLATFORM").is_none() {
         unsafe { std::env::set_var("QT_QPA_PLATFORM", "offscreen") };
     }
     if !check {
-        use quickshell::instance;
-        let by_path = instance::base_run_dir().join("by-path").join(instance::path_id(&config.to_string_lossy()));
-        if no_duplicate && !instance::collect(&by_path, &instance::display_connection()).0.is_empty() {
-            eprintln!("An instance of this configuration is already running.");
-            std::process::exit(0);
+        if let Some((running, built)) = command::qt_mismatch() {
+            quickshell::qs_log!(
+                warn,
+                "default",
+                "\x1b[31mqs-rs was built against Qt {built} but the system has updated to Qt {running} without rebuilding the package. \
+                 This is likely to cause crashes, so qs-rs must be rebuilt.\n"
+            );
         }
+        use quickshell::instance;
         let info = instance::new_info(&config.to_string_lossy(), &shell_id, pragmas.app_id.as_deref());
         match instance::create(info) {
             Ok(dir) => {
@@ -400,9 +376,13 @@ fn main() {
         host::ffi::set_plugin_path(&qstr(&dir));
     }
     let mut app = host::ffi::create_app(pragmas.use_qapplication, pragmas.desktop_settings_aware);
-    // QSRS_QML_DEBUG=PORT[,block]: QML debug server for qmlprofiler/GammaRay before the engine.
-    if let Ok(spec) = std::env::var("QSRS_QML_DEBUG") {
-        let (port, block) = spec.split_once(',').map_or((spec.as_str(), false), |(p, m)| (p, m == "block"));
+    // QML debug server for qmlprofiler/GammaRay before the engine: upstream's `--debug PORT
+    // [--waitfordebug]`, or QSRS_QML_DEBUG=PORT[,block].
+    let debug = cli.debug_port.map(|p| (p.to_string(), cli.wait_debug)).or_else(|| {
+        let spec = std::env::var("QSRS_QML_DEBUG").ok()?;
+        Some(spec.split_once(',').map_or((spec.clone(), false), |(p, m)| (p.to_string(), m == "block")))
+    });
+    if let Some((port, block)) = debug {
         if let Ok(port) = port.parse() {
             if !host::ffi::start_qml_debug_server(port, block) {
                 eprintln!("qs-rs: QML debug server failed on port {port}");
@@ -413,7 +393,7 @@ fn main() {
     if check {
         let code = check_shell(&scan, &vfs, unsafe { std::pin::Pin::new_unchecked(&mut *engine) });
         let _ = std::fs::remove_dir_all(&vfs_root);
-        std::process::exit(code);
+        return code;
     }
     let root = unsafe { host::ffi::create_root(std::pin::Pin::new_unchecked(&mut *engine), &qstr(&entry)) };
     if !root.is_null() {
@@ -428,9 +408,14 @@ fn main() {
             resident >> 20
         );
     }
-    let code = if root.is_null() { 1 } else { host::ffi::exec_app(app.pin_mut()) };
+    let code = if root.is_null() {
+        1
+    } else {
+        exit_daemon(0);
+        host::ffi::exec_app(app.pin_mut())
+    };
     if _vfs_lock.is_none() {
         let _ = std::fs::remove_dir_all(&vfs_root);
     }
-    std::process::exit(code);
+    code
 }

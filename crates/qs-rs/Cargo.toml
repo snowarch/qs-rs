@@ -7,6 +7,7 @@ edition.workspace = true
 cxx.workspace = true
 cxx-qt.workspace = true
 cxx-qt-lib.workspace = true
+libc = "0.2"
 quickshell = { path = "../quickshell" }
 quickshell_io = { path = "../quickshell-io" }
 quickshell_wayland = { path = "../quickshell-wayland" }

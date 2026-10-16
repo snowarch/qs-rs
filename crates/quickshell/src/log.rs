@@ -461,6 +461,8 @@ struct Logger {
     default_level: Level,
     color: bool,
     timestamps: bool,
+    /// `--no-detailed-logs`: the detailed log keeps only what is shown.
+    sparse: bool,
     filters: HashMap<String, Filter>,
 }
 
@@ -476,13 +478,14 @@ fn logger() -> &'static Mutex<Logger> {
             default_level: Level::Warn,
             color: true,
             timestamps: false,
+            sparse: false,
             filters: HashMap::new(),
         })
     })
 }
 
 /// Options from the command line (upstream `--log-rules`, `-v`, `--no-color`, `--log-times`).
-pub fn configure(extra_rules: &str, verbosity: u32, color: bool, timestamps: bool) {
+pub fn configure(extra_rules: &str, verbosity: u32, color: bool, timestamps: bool, sparse: bool) {
     let mut l = logger().lock().unwrap();
     l.rules.extend(parse_rules(extra_rules));
     l.default_level = match verbosity {
@@ -492,6 +495,7 @@ pub fn configure(extra_rules: &str, verbosity: u32, color: bool, timestamps: boo
     };
     l.color = color;
     l.timestamps = timestamps;
+    l.sparse = sparse;
     l.filters.clear();
 }
 
@@ -515,7 +519,7 @@ impl Logger {
                 let _ = writeln!(f, "{}", format(&m, false, true, ""));
             }
         }
-        if self.detailed.is_some() {
+        if self.detailed.is_some() && (shown || !self.sparse) {
             let mut buf = Vec::new();
             let (rules, level) = (self.rules.clone(), self.default_level);
             self.encoder.encode(&m, |c| apply_rules(&rules, c, base_filter(c, level)), &mut buf);
