@@ -6,7 +6,7 @@ fn main() {
         .qt_module("Quick")
         .qt_module("Gui")
         .cpp_file("include/layershell.h")
-        .files([] as [&str; 0])
+        .files(["src/idle.rs"])
         .build()
         .export();
 }

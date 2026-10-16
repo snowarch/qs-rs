@@ -1,6 +1,7 @@
 //! Quickshell.Wayland: layer shell attached properties (include/layershell.h).
 extern crate cxx_qt_lib;
 extern crate quickshell;
+pub mod idle;
 
 #[cfg(test)]
 mod link_init {

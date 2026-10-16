@@ -1,0 +1,17 @@
+[package]
+name = "qs_wayland"
+version.workspace = true
+edition.workspace = true
+links = "qs_wayland"
+
+[dependencies]
+cxx.workspace = true
+cxx-qt.workspace = true
+cxx-qt-lib.workspace = true
+wayland-client.workspace = true
+wayland-backend.workspace = true
+wayland-protocols.workspace = true
+wayland-protocols-wlr.workspace = true
+
+[build-dependencies]
+cxx-qt-build.workspace = true
