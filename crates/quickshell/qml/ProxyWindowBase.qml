@@ -19,6 +19,9 @@ QtObject {
     property Region mask: null
     readonly property QtObject windowTransform: null
     readonly property bool backingWindowVisible: _window.visible
+    // True once the shown window drew its first frame, i.e. its surface exists on the
+    // compositor side (popups can only attach to a mapped parent).
+    property bool _mapped: false
     property var surfaceFormat: ({})
     property bool updatesEnabled: true
     readonly property QW.Window _backingWindow: _window
@@ -40,6 +43,8 @@ QtObject {
 
     property QW.Window _window: QW.Window {
         id: _window
+        onFrameSwapped: if (!root._mapped) root._mapped = true
+        onVisibleChanged: if (!visible) root._mapped = false
         width: root.implicitWidth
         height: root.implicitHeight
         color: root.color
@@ -49,7 +54,14 @@ QtObject {
         onHeightChanged: root._applyMask()
     }
 
-    function _syncVisible() { _window.visible = root.visible && root._ready && _completed }
+    // Emitted right before the backing window is shown, for subtypes that configure the
+    // surface at creation.
+    signal _aboutToShow()
+    function _syncVisible() {
+        const show = root.visible && root._ready && _completed
+        if (show && !_window.visible) _aboutToShow()
+        _window.visible = show
+    }
     property bool _completed: false
     onVisibleChanged: _syncVisible()
     on_ReadyChanged: _syncVisible()

@@ -18,6 +18,33 @@ enum Enum : quint8 { Normal = 0, Ignore = 1, Auto = 2 };
 Q_ENUM_NS(Enum);
 } // namespace ExclusionMode
 
+namespace Edges {
+Q_NAMESPACE;
+QML_NAMED_ELEMENT(Edges);
+enum Enum : quint8 { None = 0, Top = Qt::TopEdge, Left = Qt::LeftEdge, Right = Qt::RightEdge, Bottom = Qt::BottomEdge };
+Q_ENUM_NS(Enum);
+} // namespace Edges
+
+// Same bits as xdg_positioner's constraint_adjustment.
+namespace PopupAdjustment {
+Q_NAMESPACE;
+QML_ELEMENT;
+enum Enum : quint8 {
+	None = 0,
+	SlideX = 1,
+	SlideY = 2,
+	Slide = SlideX | SlideY,
+	FlipX = 4,
+	FlipY = 8,
+	Flip = FlipX | FlipY,
+	ResizeX = 16,
+	ResizeY = 32,
+	Resize = ResizeX | ResizeY,
+	All = Slide | Flip | Resize,
+};
+Q_ENUM_NS(Enum);
+} // namespace PopupAdjustment
+
 namespace RegionShape {
 Q_NAMESPACE;
 QML_ELEMENT;
@@ -195,6 +222,22 @@ public:
 
 	Q_INVOKABLE void registerProxy(QQuickWindow* window, QObject* proxy) {
 		if (window) window->setProperty("_qsWindow", QVariant::fromValue(proxy));
+	}
+
+	// The Quickshell window object that owns an item's window, or null.
+	Q_INVOKABLE QObject* proxyOf(QQuickItem* item) {
+		auto* win = item ? item->window() : nullptr;
+		return win ? win->property("_qsWindow").value<QObject*>() : nullptr;
+	}
+
+	// Popup placement for QtWayland's xdg_positioner (read when the popup surface is created):
+	// anchor rect in parent window coordinates, anchor edges, gravity, constraint adjustment.
+	Q_INVOKABLE void setPopupAnchor(QWindow* popup, QRect rect, int edges, int gravity, int adjustment) {
+		if (!popup) return;
+		popup->setProperty("_q_waylandPopupAnchorRect", rect);
+		popup->setProperty("_q_waylandPopupAnchor", QVariant::fromValue(Qt::Edges(edges)));
+		popup->setProperty("_q_waylandPopupGravity", QVariant::fromValue(Qt::Edges(gravity)));
+		popup->setProperty("_q_waylandPopupConstraintAdjustment", static_cast<uint>(adjustment));
 	}
 };
 
