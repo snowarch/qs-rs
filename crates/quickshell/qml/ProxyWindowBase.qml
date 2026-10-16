@@ -44,7 +44,7 @@ QtObject {
     property QW.Window _window: QW.Window {
         id: _window
         onFrameSwapped: if (!root._mapped) root._mapped = true
-        onVisibleChanged: if (!visible) root._mapped = false
+        onVisibleChanged: if (!visible) { root._mapped = false; if (!root._hiding) root.closed() }
         width: root.implicitWidth
         height: root.implicitHeight
         color: root.color
@@ -57,10 +57,19 @@ QtObject {
     // Emitted right before the backing window is shown, for subtypes that configure the
     // surface at creation.
     signal _aboutToShow()
+    // The window was closed from outside (compositor dismissal, close request), not by us.
+    signal closed()
+    property bool _hiding: false
+    function _hide() {
+        _hiding = true
+        _window.visible = false
+        _hiding = false
+    }
     function _syncVisible() {
         const show = root.visible && root._ready && _completed
         if (show && !_window.visible) _aboutToShow()
-        _window.visible = show
+        if (show) _window.visible = true
+        else if (_window.visible) _hide()
     }
     property bool _completed: false
     onVisibleChanged: _syncVisible()

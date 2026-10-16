@@ -60,7 +60,7 @@ ProxyWindowBase {
     // Layer, namespace and output are fixed when the surface is created: recreate on change.
     function _recreate() {
         if (!_window.visible) return
-        _window.visible = false
+        _hide()
         _syncVisible()
     }
     on_LayerChanged: _recreate()

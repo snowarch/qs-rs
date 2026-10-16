@@ -31,7 +31,7 @@ ProxyWindowBase {
     function _reposition() {
         if (!_window.visible || _placing) return
         _placing = true
-        _window.visible = false
+        _hide()
         _syncVisible()
         _placing = false
     }
@@ -43,10 +43,5 @@ ProxyWindowBase {
         _place()
     }
 
-    property Connections _closeWatch: Connections {
-        target: root._window
-        function onVisibleChanged() {
-            if (!root._window.visible && !root._placing && root.visible && root._ready && root._completed) root.visible = false
-        }
-    }
+    onClosed: visible = false
 }

@@ -32,6 +32,8 @@ ShellRoot {
         relativeX: 7
         relativeY: 9
         visible: true
+        property int closes: 0
+        onClosed: closes++
         implicitWidth: 50; implicitHeight: 50
     }
     PopupWindow { id: orphan; visible: true }
@@ -52,6 +54,11 @@ ShellRoot {
             root.check("hidden popup stays hidden", !itemPopup.backingWindowVisible)
             root.check("shown with parent", parentWin._mapped && winPopup.backingWindowVisible)
             root.check("orphan not shown", !orphan.backingWindowVisible)
+            winPopup.visible = false
+            winPopup.visible = true
+            root.check("own hide is not a close", winPopup.closes === 0 && winPopup.backingWindowVisible)
+            winPopup._window.close()
+            root.check("external close", winPopup.closes === 1 && !winPopup.visible && !winPopup.backingWindowVisible)
             root.finish()
         }
     }
