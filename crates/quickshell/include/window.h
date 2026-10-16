@@ -11,6 +11,39 @@
 #include <QtQuick/QQuickWindow>
 #include <QtQml/QQmlListProperty>
 #include <cmath>
+#include <QtGui/QOffscreenSurface>
+#include <QtGui/rhi/qrhi.h>
+#include <QtQuick/QQuickGraphicsDevice>
+
+// One QRhi (one GL context) for every window instead of one per window: each Mesa context costs
+// heap, VRAM and driver threads. The host runs the basic render loop for it (a QRhi is used from one
+// thread). QSRS_PER_WINDOW_GL=1 restores upstream's per-window contexts and threaded loop.
+inline bool qsSharedGraphics() {
+	static const bool shared = !qEnvironmentVariableIsSet("QSRS_PER_WINDOW_GL");
+	return shared;
+}
+
+// The format every window and the shared context use: Qt Quick's own (depth 24, stencil 8) with
+// alpha, so one EGL config fits all surfaces. Swap interval 0: with every window on the GUI thread,
+// a swap must not wait for a frame callback the compositor may hold back for a covered surface.
+inline QSurfaceFormat qsSharedFormat() {
+	auto format = QSurfaceFormat::defaultFormat();
+	format.setDepthBufferSize(24);
+	format.setStencilBufferSize(8);
+	format.setAlphaBufferSize(8);
+	format.setSwapInterval(0);
+	return format;
+}
+
+inline QRhi* qsSharedRhi() {
+	static QRhi* rhi = [] {
+		QRhiGles2InitParams params;
+		params.format = qsSharedFormat();
+		params.fallbackSurface = QRhiGles2InitParams::newFallbackSurface(params.format);
+		return QRhi::create(QRhi::OpenGLES2, &params);
+	}();
+	return rhi;
+}
 
 namespace ExclusionMode {
 Q_NAMESPACE;
@@ -236,7 +269,14 @@ public:
 	}
 
 	Q_INVOKABLE void registerProxy(QQuickWindow* window, QObject* proxy) {
-		if (window) window->setProperty("_qsWindow", QVariant::fromValue(proxy));
+		if (!window) return;
+		window->setProperty("_qsWindow", QVariant::fromValue(proxy));
+		if (qsSharedGraphics()) {
+			if (auto* rhi = qsSharedRhi()) {
+				window->setFormat(qsSharedFormat());
+				window->setGraphicsDevice(QQuickGraphicsDevice::fromRhi(rhi));
+			}
+		}
 	}
 
 	// `url` resolved against the file that instantiated `object` (upstream's

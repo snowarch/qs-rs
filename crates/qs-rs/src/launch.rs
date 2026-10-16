@@ -77,6 +77,23 @@ pub fn apply_env(p: &Pragmas) {
         for (k, v) in &p.env {
             std::env::set_var(k, v);
         }
+        // Every window shares one GL context (quickshell's window.h), which needs the basic render
+        // loop whatever the shell asks for; Mesa's per-context driver thread is then only
+        // overhead. QSRS_PER_WINDOW_GL=1 keeps upstream's setup.
+        if std::env::var_os("QSRS_PER_WINDOW_GL").is_none() {
+            std::env::set_var("QSG_RENDER_LOOP", "basic");
+            if std::env::var_os("GALLIUM_THREAD").is_none() {
+                std::env::set_var("GALLIUM_THREAD", "0");
+            }
+        }
+        // Measurement override: QSRS_ENV_OVERRIDE="K=V K2=V2" wins over the shell's pragmas.
+        if let Ok(o) = std::env::var("QSRS_ENV_OVERRIDE") {
+            for kv in o.split_whitespace() {
+                if let Some((k, v)) = kv.split_once('=') {
+                    std::env::set_var(k, v);
+                }
+            }
+        }
     }
 }
 
