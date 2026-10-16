@@ -350,6 +350,8 @@ dependencies = [
  "cxx-qt",
  "cxx-qt-build",
  "cxx-qt-lib",
+ "quickshell",
+ "quickshell_io",
 ]
 
 [[package]]
@@ -364,6 +366,26 @@ dependencies = [
  "serde",
  "thiserror",
  "which",
+]
+
+[[package]]
+name = "quickshell"
+version = "0.1.0"
+dependencies = [
+ "cxx",
+ "cxx-qt",
+ "cxx-qt-build",
+ "cxx-qt-lib",
+]
+
+[[package]]
+name = "quickshell_io"
+version = "0.1.0"
+dependencies = [
+ "cxx",
+ "cxx-qt",
+ "cxx-qt-build",
+ "cxx-qt-lib",
 ]
 
 [[package]]

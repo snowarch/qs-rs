@@ -1,0 +1,14 @@
+[package]
+name = "qs-rs"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+cxx.workspace = true
+cxx-qt.workspace = true
+cxx-qt-lib.workspace = true
+quickshell = { path = "../quickshell" }
+quickshell_io = { path = "../quickshell-io" }
+
+[build-dependencies]
+cxx-qt-build.workspace = true
