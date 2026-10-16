@@ -1,4 +1,5 @@
 import QtQml
+import Quickshell
 
 // Creates its component on demand. `loading` incubates asynchronously, `active` forces creation
 // to finish (blocking), `activeAsync` activates through an async load. `item` is owned here.
@@ -6,7 +7,8 @@ QtObject {
     id: root
     property string reloadableId
     default property Component component
-    property string source
+    // Relative paths resolve against the file that instantiated this loader.
+    property url source
 
     property bool loading: false
     property bool active: false
@@ -20,9 +22,10 @@ QtObject {
 
     function _component() {
         if (component) return component
-        if (!source) return null
-        if (!_sourceComponent || _sourceComponent.url.toString() !== Qt.resolvedUrl(source).toString())
-            _sourceComponent = Qt.createComponent(source, Component.Asynchronous)
+        if (source.toString() === "") return null
+        const url = QsWindowSupport.resolvedUrl(root, source)
+        if (!_sourceComponent || _sourceComponent.url.toString() !== url.toString())
+            _sourceComponent = Qt.createComponent(url, Component.Asynchronous)
         return _sourceComponent
     }
 
@@ -82,8 +85,9 @@ QtObject {
         if (activeAsync) { if (!_item) loading = true }
         else active = false
     }
-    onComponentChanged: if (active || loading) { _destroy(); if (active) { active = false; active = true } else _incubate() }
-    onSourceChanged: onComponentChanged()
+    function _reload() { if (active || loading) { _destroy(); if (active) { active = false; active = true } else _incubate() } }
+    onComponentChanged: _reload()
+    onSourceChanged: _reload()
 
     Component.onCompleted: {
         _ready = true

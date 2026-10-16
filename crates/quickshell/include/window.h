@@ -5,6 +5,7 @@
 #include <QtCore/QPointer>
 #include <QtGui/QRegion>
 #include <QtGui/QWindow>
+#include <QtQml/QQmlContext>
 #include <QtQml/qqml.h>
 #include <QtQuick/QQuickItem>
 #include <QtQuick/QQuickWindow>
@@ -222,6 +223,13 @@ public:
 
 	Q_INVOKABLE void registerProxy(QQuickWindow* window, QObject* proxy) {
 		if (window) window->setProperty("_qsWindow", QVariant::fromValue(proxy));
+	}
+
+	// `url` resolved against the file that instantiated `object` (upstream's
+	// qmlContext(this)->resolvedUrl for relative paths like LazyLoader.source).
+	Q_INVOKABLE QUrl resolvedUrl(QObject* object, const QUrl& url) {
+		auto* ctx = object ? qmlContext(object) : nullptr;
+		return ctx ? ctx->resolvedUrl(url) : url;
 	}
 
 	// The Quickshell window object that owns an item's window, or null.

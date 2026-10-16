@@ -80,6 +80,10 @@ impl Scan {
         let text = fs::read_to_string(path).ok()?;
         let mut info = FileInfo::default();
         let mut imports = Vec::new();
+        // `import "root:X"` lines, rewritten to relative paths in the VFS copy (Qt treats an
+        // unknown scheme in a directory import as remote and cannot read its qmldir).
+        let mut rewritten = false;
+        let mut header = Vec::new();
         for raw in text.lines() {
             let line = raw.trim();
             if line == "pragma Singleton" {
@@ -97,14 +101,35 @@ impl Scan {
                         let target = &line[a + 1..b];
                         let base = path.parent().unwrap();
                         imports.push(match target.strip_prefix("root:") {
-                            Some(r) => self.root.join(r.trim_start_matches('/')),
-                            None => base.join(target),
+                            Some(r) => {
+                                let r = r.trim_start_matches('/');
+                                let depth = base.strip_prefix(&self.root).map(|p| p.components().count()).unwrap_or(0);
+                                let rel = format!("{}{r}", "../".repeat(depth));
+                                let rel = if rel.is_empty() { ".".to_string() } else { rel };
+                                header.push(raw.replacen(&format!("\"{target}\""), &format!("\"{rel}\""), 1));
+                                rewritten = true;
+                                self.root.join(r)
+                            }
+                            None => {
+                                header.push(raw.to_string());
+                                base.join(target)
+                            }
                         });
+                        continue;
                     }
                 }
             } else if line.contains('{') {
                 break;
             }
+            header.push(raw.to_string());
+        }
+        if rewritten {
+            let rest: Vec<&str> = text.lines().skip(header.len()).collect();
+            let mut out = header.join("\n");
+            out.push('\n');
+            out.push_str(&rest.join("\n"));
+            out.push('\n');
+            self.intercepts.insert(path.to_path_buf(), out);
         }
         self.scan_dir(path.parent().unwrap());
         for import in imports {
