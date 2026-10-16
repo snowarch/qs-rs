@@ -1034,6 +1034,7 @@ dependencies = [
  "quickshell_services_mpris",
  "quickshell_services_notifications",
  "quickshell_services_pipewire",
+ "quickshell_services_systemtray",
  "quickshell_services_upower",
  "quickshell_wayland",
 ]
@@ -1137,6 +1138,18 @@ dependencies = [
  "cxx-qt-build",
  "cxx-qt-lib",
  "pipewire",
+]
+
+[[package]]
+name = "quickshell_services_systemtray"
+version = "0.1.0"
+dependencies = [
+ "cxx",
+ "cxx-qt",
+ "cxx-qt-build",
+ "cxx-qt-lib",
+ "qs_dbus",
+ "zbus",
 ]
 
 [[package]]

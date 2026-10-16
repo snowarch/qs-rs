@@ -61,12 +61,8 @@ use qs_dbus::{json_string, props_json, Worker};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
-use zbus::blocking::{Connection, MessageIterator};
-use zbus::fdo::RequestNameFlags;
-use zbus::message::Type;
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::OwnedValue;
-use zbus::MatchRule;
 
 const NAME: &str = "org.freedesktop.Notifications";
 const PATH: &str = "/org/freedesktop/Notifications";
@@ -122,9 +118,8 @@ impl Server {
             st.next_id = st.next_id.wrapping_add(1).max(1);
             id
         };
-        if let Some(Some(old)) = st.live.insert(id, None) {
-            let _ = std::fs::remove_file(old);
-        }
+        // A replaced image is removed only after QML moved to the new one.
+        let stale = st.live.insert(id, None).flatten();
         let mut image = String::new();
         if let Some(p) = pixmap {
             st.image_seq += 1;
@@ -159,7 +154,12 @@ impl Server {
         json.push_str(&format!(",\"expireTimeout\":{expire_timeout},\"image\":"));
         json_string(&image, &mut json);
         json.push('}');
-        let _ = self.qt.queue(move |this| this.notified(id, QString::from(&json)));
+        let _ = self.qt.queue(move |this| {
+            this.notified(id, QString::from(&json));
+            if let Some(f) = stale {
+                let _ = std::fs::remove_file(f);
+            }
+        });
         id
     }
 
@@ -187,35 +187,6 @@ impl Server {
     async fn notification_replied(emitter: &SignalEmitter<'_>, id: u32, text: &str) -> zbus::Result<()>;
 }
 
-/// Claims the name now and again whenever its owner goes away.
-fn claim_name(conn: &Connection) -> zbus::Result<()> {
-    let rule = MatchRule::builder()
-        .msg_type(Type::Signal)
-        .sender("org.freedesktop.DBus")?
-        .interface("org.freedesktop.DBus")?
-        .member("NameOwnerChanged")?
-        .arg(0, NAME)?
-        .build();
-    let changes = MessageIterator::for_match_rule(rule, conn, None)?;
-    let try_claim = || match conn.request_name_with_flags(NAME, RequestNameFlags::DoNotQueue.into()) {
-        Ok(_) => eprintln!("Notifications: registered {NAME}"),
-        Err(zbus::Error::NameTaken) => eprintln!(
-            "Notifications: {NAME} is owned by another server; registration will be retried when it goes away"
-        ),
-        Err(e) => eprintln!("Notifications: cannot register {NAME}: {e}"),
-    };
-    try_claim();
-    for msg in changes {
-        let msg = msg?;
-        if let Ok((_, _, new)) = msg.body().deserialize::<(String, String, String)>() {
-            if new.is_empty() {
-                try_claim();
-            }
-        }
-    }
-    Ok(())
-}
-
 impl qobject::NotificationServerCore {
     fn start(&self, capabilities: &QString) {
         let caps: Vec<String> = capabilities.to_string().split_whitespace().map(String::from).collect();
@@ -239,7 +210,7 @@ impl qobject::NotificationServerCore {
                     Err(e) => return eprintln!("Notifications: cannot serve on the session bus: {e}"),
                 };
                 worker.get_or_init(|| Worker::new(conn.clone(), "notifications-signals"));
-                if let Err(e) = claim_name(&conn) {
+                if let Err(e) = qs_dbus::claim_name(&conn, NAME, "Notifications") {
                     eprintln!("Notifications: {e}");
                 }
             })

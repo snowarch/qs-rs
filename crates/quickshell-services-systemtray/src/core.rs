@@ -1,0 +1,456 @@
+//! StatusNotifierItem tray. One connection hosts org.kde.StatusNotifierWatcher (claimed again
+//! whenever another watcher leaves, like upstream); another one is the host: it registers with
+//! whichever watcher owns the name, reads every item with GetAll and re-reads it on the item's
+//! New* signals. Items are keyed by the watcher's "service/path" string.
+
+#[cxx_qt::bridge]
+pub mod qobject {
+    unsafe extern "C++" {
+        include!("cxx-qt-lib/qstring.h");
+        type QString = cxx_qt_lib::QString;
+    }
+
+    extern "RustQt" {
+        #[qobject]
+        #[qml_element = "SystemTrayCore"]
+        #[qml_singleton]
+        type SystemTrayCore = super::SystemTrayCoreRust;
+
+        #[qinvokable]
+        fn activate(self: &SystemTrayCore, key: &QString);
+        #[qinvokable]
+        #[cxx_name = "secondaryActivate"]
+        fn secondary_activate(self: &SystemTrayCore, key: &QString);
+        #[qinvokable]
+        fn scroll(self: &SystemTrayCore, key: &QString, delta: i32, horizontal: bool);
+
+        /// An item's properties as JSON; the first one makes the item ready.
+        #[qsignal]
+        #[cxx_name = "itemChanged"]
+        fn item_changed(self: Pin<&mut SystemTrayCore>, key: QString, json: QString);
+        #[qsignal]
+        #[cxx_name = "itemRemoved"]
+        fn item_removed(self: Pin<&mut SystemTrayCore>, key: QString);
+    }
+
+    impl cxx_qt::Initialize for SystemTrayCore {}
+    impl cxx_qt::Threading for SystemTrayCore {}
+}
+
+use core::pin::Pin;
+use cxx_qt::{CxxQtThread, Threading};
+use cxx_qt_lib::QString;
+use qs_dbus::pixmap::{image_dir, Pixmap};
+use qs_dbus::{json_string, Worker};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, OnceLock};
+use zbus::blocking::{Connection, MessageIterator, Proxy};
+use zbus::message::{Header, Type};
+use zbus::object_server::SignalEmitter;
+use zbus::zvariant::{OwnedValue, Value};
+use zbus::MatchRule;
+
+const WATCHER: &str = "org.kde.StatusNotifierWatcher";
+const WATCHER_PATH: &str = "/StatusNotifierWatcher";
+const ITEM: &str = "org.kde.StatusNotifierItem";
+
+type Qt = CxxQtThread<qobject::SystemTrayCore>;
+
+#[derive(Default)]
+pub struct SystemTrayCoreRust {
+    worker: Arc<OnceLock<Worker>>,
+}
+
+// ---- watcher ----
+
+#[derive(Default)]
+struct Watcher {
+    items: Arc<Mutex<Vec<String>>>,
+    hosts: Arc<Mutex<Vec<String>>>,
+}
+
+/// A registration argument as "service/path": a bare path belongs to the caller, a bare
+/// service uses the default path.
+fn qualify(item: &str, sender: Option<&str>) -> String {
+    let mut q = if item.starts_with('/') { format!("{}{item}", sender.unwrap_or_default()) } else { item.to_string() };
+    if !q.contains('/') {
+        q.push_str("/StatusNotifierItem");
+    }
+    q
+}
+
+async fn has_owner(conn: &zbus::Connection, name: &str) -> bool {
+    let Ok(dbus) = zbus::fdo::DBusProxy::new(conn).await else { return false };
+    let Ok(name) = zbus::names::BusName::try_from(name) else { return false };
+    dbus.get_name_owner(name).await.is_ok()
+}
+
+#[zbus::interface(name = "org.kde.StatusNotifierWatcher")]
+impl Watcher {
+    async fn register_status_notifier_item(
+        &self,
+        service: &str,
+        #[zbus(header)] hdr: Header<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) {
+        let q = qualify(service, hdr.sender().map(|s| s.as_str()));
+        let svc = q.split('/').next().unwrap_or_default().to_string();
+        if self.items.lock().unwrap().contains(&q) {
+            return;
+        }
+        if !has_owner(conn, &svc).await {
+            return eprintln!("SystemTray: ignoring invalid item registration of {q}");
+        }
+        self.items.lock().unwrap().push(q.clone());
+        let _ = Self::status_notifier_item_registered(&emitter, &q).await;
+    }
+
+    async fn register_status_notifier_host(
+        &self,
+        service: &str,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) {
+        if self.hosts.lock().unwrap().iter().any(|h| h == service) {
+            return;
+        }
+        if !has_owner(conn, service).await {
+            return eprintln!("SystemTray: ignoring invalid host registration of {service}");
+        }
+        self.hosts.lock().unwrap().push(service.to_string());
+        let _ = Self::status_notifier_host_registered(&emitter).await;
+    }
+
+    #[zbus(property)]
+    fn registered_status_notifier_items(&self) -> Vec<String> {
+        self.items.lock().unwrap().clone()
+    }
+
+    #[zbus(property)]
+    fn is_status_notifier_host_registered(&self) -> bool {
+        true
+    }
+
+    #[zbus(property)]
+    fn protocol_version(&self) -> i32 {
+        0
+    }
+
+    #[zbus(signal)]
+    async fn status_notifier_item_registered(emitter: &SignalEmitter<'_>, service: &str) -> zbus::Result<()>;
+    #[zbus(signal)]
+    async fn status_notifier_item_unregistered(emitter: &SignalEmitter<'_>, service: &str) -> zbus::Result<()>;
+    #[zbus(signal)]
+    async fn status_notifier_host_registered(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
+    #[zbus(signal)]
+    async fn status_notifier_host_unregistered(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
+}
+
+fn run_watcher() -> zbus::Result<()> {
+    let watcher = Watcher::default();
+    let (items, hosts) = (watcher.items.clone(), watcher.hosts.clone());
+    let conn = zbus::blocking::connection::Builder::session()?.serve_at(WATCHER_PATH, watcher)?.build()?;
+    {
+        let conn = conn.clone();
+        std::thread::Builder::new()
+            .name("tray-watcher-name".into())
+            .spawn(move || qs_dbus::claim_name(&conn, WATCHER, "SystemTray"))
+            .expect("spawn tray watcher thread");
+    }
+    // Drop items and hosts whose service left the bus.
+    for (name, _, new) in qs_dbus::name_owner_changes(&conn, "")? {
+        if !new.is_empty() {
+            continue;
+        }
+        let prefix = format!("{name}/");
+        let gone: Vec<String> = {
+            let mut items = items.lock().unwrap();
+            let gone = items.iter().filter(|i| i.starts_with(&prefix)).cloned().collect();
+            items.retain(|i| !i.starts_with(&prefix));
+            gone
+        };
+        let host_gone = {
+            let mut hosts = hosts.lock().unwrap();
+            let n = hosts.len();
+            hosts.retain(|h| *h != name);
+            hosts.len() != n
+        };
+        if gone.is_empty() && !host_gone {
+            continue;
+        }
+        let iface = conn.object_server().interface::<_, Watcher>(WATCHER_PATH)?;
+        let emitter = iface.signal_emitter();
+        for item in gone {
+            let _ = zbus::block_on(Watcher::status_notifier_item_unregistered(emitter, &item));
+        }
+        if host_gone {
+            let _ = zbus::block_on(Watcher::status_notifier_host_unregistered(emitter));
+        }
+    }
+    Ok(())
+}
+
+// ---- host ----
+
+struct Item {
+    service: String,
+    path: String,
+    /// Unique name the item's signals come from.
+    owner: String,
+    /// Pixmap files in use, named `<n>-<content hash>.bmp`, so a re-read with the same icon
+    /// reuses its file.
+    n: u64,
+    files: Vec<PathBuf>,
+}
+
+#[derive(Clone)]
+struct Host {
+    conn: Connection,
+    qt: Qt,
+    items: Arc<Mutex<HashMap<String, Item>>>,
+    image_dir: PathBuf,
+    seq: Arc<Mutex<u64>>,
+}
+
+fn split_key(key: &str) -> (String, String) {
+    match key.find('/') {
+        Some(i) => (key[..i].to_string(), key[i..].to_string()),
+        None => (key.to_string(), "/StatusNotifierItem".to_string()),
+    }
+}
+
+impl Host {
+    fn connect_to_watcher(&self, host_id: &str) {
+        let watcher = Proxy::new(&self.conn, WATCHER, WATCHER_PATH, WATCHER);
+        let result = watcher.and_then(|w| {
+            w.call::<_, _, ()>("RegisterStatusNotifierHost", &(host_id,))?;
+            w.get_property::<Vec<String>>("RegisteredStatusNotifierItems")
+        });
+        match result {
+            Ok(items) => items.into_iter().for_each(|i| self.add(i)),
+            Err(e) => eprintln!("SystemTray: cannot use the StatusNotifierWatcher: {e}"),
+        }
+    }
+
+    fn add(&self, key: String) {
+        if self.items.lock().unwrap().contains_key(&key) {
+            return;
+        }
+        let (service, path) = split_key(&key);
+        let owner = match zbus::blocking::fdo::DBusProxy::new(&self.conn)
+            .and_then(|d| Ok(d.get_name_owner(zbus::names::BusName::try_from(service.as_str())?)?))
+        {
+            Ok(o) => o.to_string(),
+            Err(e) => return eprintln!("SystemTray: cannot create item for {key}: {e}"),
+        };
+        let n = {
+            let mut s = self.seq.lock().unwrap();
+            *s += 1;
+            *s
+        };
+        self.items.lock().unwrap().insert(key.clone(), Item { service, path, owner, n, files: Vec::new() });
+        self.refresh(key);
+    }
+
+    fn remove(&self, key: &str) {
+        if let Some(item) = self.items.lock().unwrap().remove(key) {
+            let key = key.to_string();
+            let _ = self.qt.queue(move |this| {
+                this.item_removed(QString::from(&key));
+                item.files.iter().for_each(|f| drop(std::fs::remove_file(f)));
+            });
+        }
+    }
+
+    fn remove_all(&self) {
+        let keys: Vec<String> = self.items.lock().unwrap().keys().cloned().collect();
+        keys.iter().for_each(|k| self.remove(k));
+    }
+
+    /// Re-reads all properties of an item off the signal thread.
+    fn refresh(&self, key: String) {
+        let host = self.clone();
+        std::thread::spawn(move || {
+            let Some((service, path)) = host.items.lock().unwrap().get(&key).map(|i| (i.service.clone(), i.path.clone())) else { return };
+            let props: zbus::Result<HashMap<String, OwnedValue>> =
+                Proxy::new(&host.conn, service, path, "org.freedesktop.DBus.Properties").and_then(|p| p.call("GetAll", &(ITEM,)));
+            match props {
+                Ok(p) => host.emit(&key, &p),
+                Err(e) => eprintln!("SystemTray: failed to load tray item {key}: {e}"),
+            }
+        });
+    }
+
+    /// Writes the largest pixmap of an `a(iiay)` list; returns its file URL.
+    fn pixmap(&self, n: u64, value: Option<&OwnedValue>, files: &mut Vec<PathBuf>) -> String {
+        let Some(list) = value.and_then(|v| Vec::<(i32, i32, Vec<u8>)>::try_from(v.try_clone().ok()?).ok()) else { return String::new() };
+        let Some((w, h, data)) = list.iter().max_by_key(|(w, h, _)| w * h) else { return String::new() };
+        let Some(p) = Pixmap::from_argb32(*w, *h, data) else { return String::new() };
+        let bmp = p.to_bmp();
+        let mut hasher = std::hash::DefaultHasher::new();
+        std::hash::Hash::hash(&bmp, &mut hasher);
+        let file = self.image_dir.join(format!("{n}-{:016x}.bmp", std::hash::Hasher::finish(&hasher)));
+        let written = if file.exists() { Ok(()) } else { std::fs::create_dir_all(&self.image_dir).and_then(|_| std::fs::write(&file, bmp)) };
+        if let Err(e) = written {
+            eprintln!("SystemTray: cannot write icon: {e}");
+            return String::new();
+        }
+        let url = format!("file://{}", file.display());
+        files.push(file);
+        url
+    }
+
+    fn emit(&self, key: &str, p: &HashMap<String, OwnedValue>) {
+        let s = |k: &str| p.get(k).and_then(|v| String::try_from(v.try_clone().ok()?).ok()).unwrap_or_default();
+        let Some(n) = self.items.lock().unwrap().get(key).map(|i| i.n) else { return };
+        let mut files = Vec::new();
+        let icon = self.pixmap(n, p.get("IconPixmap"), &mut files);
+        let attention = self.pixmap(n, p.get("AttentionIconPixmap"), &mut files);
+        let has_overlay = p.get("OverlayIconPixmap").is_some_and(|v| matches!(&**v, Value::Array(a) if !a.is_empty()));
+        let (tip_title, tip_text) = p
+            .get("ToolTip")
+            .and_then(|v| <(String, Vec<(i32, i32, Vec<u8>)>, String, String)>::try_from(v.try_clone().ok()?).ok())
+            .map(|t| (t.2, t.3))
+            .unwrap_or_default();
+        let menu = p.get("Menu").and_then(|v| zbus::zvariant::OwnedObjectPath::try_from(v.try_clone().ok()?).ok()).map(|o| o.to_string()).unwrap_or_default();
+        let only_menu = p.get("ItemIsMenu").and_then(|v| bool::try_from(&**v).ok()).unwrap_or(false);
+
+        let mut json = String::from("{");
+        for (k, v) in [
+            ("id", s("Id")),
+            ("title", s("Title")),
+            ("status", s("Status")),
+            ("category", s("Category")),
+            ("iconName", s("IconName")),
+            ("iconThemePath", s("IconThemePath")),
+            ("attentionIconName", s("AttentionIconName")),
+            ("overlayIconName", s("OverlayIconName")),
+            ("iconPixmap", icon),
+            ("attentionIconPixmap", attention),
+            ("tooltipTitle", tip_title),
+            ("tooltipDescription", tip_text),
+            ("menu", menu),
+        ] {
+            json_string(k, &mut json);
+            json.push(':');
+            json_string(&v, &mut json);
+            json.push(',');
+        }
+        json.push_str(&format!("\"hasOverlayPixmap\":{has_overlay},\"onlyMenu\":{only_menu}}}"));
+
+        // Replaced icon files are removed only after QML moved to the new ones.
+        let stale: Vec<PathBuf> = match self.items.lock().unwrap().get_mut(key) {
+            Some(item) => std::mem::replace(&mut item.files, files.clone()).into_iter().filter(|f| !files.contains(f)).collect(),
+            None => return,
+        };
+        let key = key.to_string();
+        let _ = self.qt.queue(move |this| {
+            this.item_changed(QString::from(&key), QString::from(&json));
+            stale.iter().for_each(|f| drop(std::fs::remove_file(f)));
+        });
+    }
+
+    /// Keys of the items a signal from `owner` at `path` belongs to.
+    fn keys_of(&self, owner: &str, path: &str) -> Vec<String> {
+        self.items.lock().unwrap().iter().filter(|(_, i)| i.owner == owner && i.path == path).map(|(k, _)| k.clone()).collect()
+    }
+}
+
+fn stream(conn: &Connection, iface: &str) -> zbus::Result<MessageIterator> {
+    let rule = MatchRule::builder().msg_type(Type::Signal).interface(iface.to_string())?.build();
+    MessageIterator::for_match_rule(rule, conn, None)
+}
+
+fn run_host(qt: Qt, worker: Arc<OnceLock<Worker>>) -> zbus::Result<()> {
+    let conn = Connection::session()?;
+    worker.get_or_init(|| Worker::new(conn.clone(), "tray-calls"));
+    let launch = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
+    let host_id = format!("org.kde.StatusNotifierHost-{}-{launch}", std::process::id());
+    conn.request_name(host_id.as_str())?;
+    let host = Host { conn: conn.clone(), qt, items: Default::default(), image_dir: image_dir("tray"), seq: Default::default() };
+
+    let watcher_signals = stream(&conn, WATCHER)?;
+    let item_signals = stream(&conn, ITEM)?;
+    let watcher_owner = qs_dbus::name_owner_changes(&conn, WATCHER)?;
+    {
+        let host = host.clone();
+        std::thread::spawn(move || {
+            for msg in watcher_signals.flatten() {
+                let hdr = msg.header();
+                let Ok(key) = msg.body().deserialize::<String>() else { continue };
+                match hdr.member().map(|m| m.as_str()) {
+                    Some("StatusNotifierItemRegistered") => host.add(key),
+                    Some("StatusNotifierItemUnregistered") => host.remove(&key),
+                    _ => {}
+                }
+            }
+        });
+    }
+    {
+        let host = host.clone();
+        std::thread::spawn(move || {
+            for msg in item_signals.flatten() {
+                let hdr = msg.header();
+                let (Some(sender), Some(path)) = (hdr.sender(), hdr.path()) else { continue };
+                if hdr.member().is_some_and(|m| m.starts_with("New")) {
+                    host.keys_of(sender.as_str(), path.as_str()).into_iter().for_each(|k| host.refresh(k));
+                }
+            }
+        });
+    }
+    host.connect_to_watcher(&host_id);
+    for (_, _, new) in watcher_owner {
+        if new.is_empty() {
+            host.remove_all();
+        } else {
+            host.connect_to_watcher(&host_id);
+        }
+    }
+    Ok(())
+}
+
+impl cxx_qt::Initialize for qobject::SystemTrayCore {
+    fn initialize(self: Pin<&mut Self>) {
+        let (qt, worker) = (self.qt_thread(), self.worker.clone());
+        std::thread::Builder::new()
+            .name("tray-watcher".into())
+            .spawn(|| {
+                if let Err(e) = run_watcher() {
+                    eprintln!("SystemTray: watcher: {e}");
+                }
+            })
+            .expect("spawn tray watcher");
+        std::thread::Builder::new()
+            .name("tray-host".into())
+            .spawn(move || {
+                if let Err(e) = run_host(qt, worker) {
+                    eprintln!("SystemTray: host: {e}");
+                }
+            })
+            .expect("spawn tray host");
+    }
+}
+
+impl qobject::SystemTrayCore {
+    fn call(&self, key: &QString, method: &'static str, f: impl FnOnce(&Proxy<'_>) -> zbus::Result<()> + Send + 'static) {
+        let (service, path) = split_key(&key.to_string());
+        if let Some(w) = self.worker.get() {
+            w.run(format!("SystemTray: {method} on {service}"), move |conn| f(&Proxy::new(conn, service, path, ITEM)?));
+        }
+    }
+
+    fn activate(&self, key: &QString) {
+        self.call(key, "Activate", |p| p.call("Activate", &(0i32, 0i32)));
+    }
+
+    fn secondary_activate(&self, key: &QString) {
+        self.call(key, "SecondaryActivate", |p| p.call("SecondaryActivate", &(0i32, 0i32)));
+    }
+
+    fn scroll(&self, key: &QString, delta: i32, horizontal: bool) {
+        let orientation = if horizontal { "horizontal" } else { "vertical" };
+        self.call(key, "Scroll", move |p| p.call("Scroll", &(delta, orientation)));
+    }
+}

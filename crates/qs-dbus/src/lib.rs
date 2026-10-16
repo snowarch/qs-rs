@@ -173,3 +173,42 @@ impl Worker {
         }));
     }
 }
+
+/// Owns `name` without queueing (like QDBusConnection::registerService) and claims it again each
+/// time its owner goes away. Blocks for the life of the connection.
+pub fn claim_name(conn: &zbus::blocking::Connection, name: &str, who: &str) -> zbus::Result<()> {
+    use zbus::fdo::RequestNameFlags;
+    let changes = name_owner_changes(conn, name)?;
+    let try_claim = || match conn.request_name_with_flags(name, RequestNameFlags::DoNotQueue.into()) {
+        Ok(_) => eprintln!("{who}: registered {name}"),
+        Err(zbus::Error::NameTaken) => {
+            eprintln!("{who}: {name} is owned by another service; registration will be retried when it goes away")
+        }
+        Err(e) => eprintln!("{who}: cannot register {name}: {e}"),
+    };
+    try_claim();
+    for (_, _, new) in changes {
+        if new.is_empty() {
+            try_claim();
+        }
+    }
+    Ok(())
+}
+
+/// NameOwnerChanged signals as `(name, old_owner, new_owner)`, for one name or (empty `name`)
+/// for all of them.
+pub fn name_owner_changes(
+    conn: &zbus::blocking::Connection,
+    name: &str,
+) -> zbus::Result<impl Iterator<Item = (String, String, String)> + use<>> {
+    let mut rule = zbus::MatchRule::builder()
+        .msg_type(zbus::message::Type::Signal)
+        .sender("org.freedesktop.DBus")?
+        .interface("org.freedesktop.DBus")?
+        .member("NameOwnerChanged")?;
+    if !name.is_empty() {
+        rule = rule.arg(0, name.to_string())?;
+    }
+    let it = zbus::blocking::MessageIterator::for_match_rule(rule.build(), conn, None)?;
+    Ok(it.flatten().filter_map(|m| m.body().deserialize::<(String, String, String)>().ok()))
+}

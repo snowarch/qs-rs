@@ -16,6 +16,7 @@ quickshell_services_upower = { path = "../quickshell-services-upower" }
 quickshell_bluetooth = { path = "../quickshell-bluetooth" }
 quickshell_services_mpris = { path = "../quickshell-services-mpris" }
 quickshell_services_notifications = { path = "../quickshell-services-notifications" }
+quickshell_services_systemtray = { path = "../quickshell-services-systemtray" }
 
 [build-dependencies]
 cxx-qt-build.workspace = true
