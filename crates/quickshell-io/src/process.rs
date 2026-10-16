@@ -68,7 +68,6 @@ use quickshell::proc::{Context, Event, Spawned};
 use core::pin::Pin;
 use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::{QHash, QHashPair_QString_QVariant, QString, QStringList, QVariant};
-use std::sync::mpsc::Sender;
 
 pub struct ProcessRust {
     running: bool,
@@ -85,7 +84,7 @@ pub struct ProcessRust {
     start_queued: bool,
     run_id: u64,
     pid: Option<u32>,
-    stdin: Option<Sender<Vec<u8>>>,
+    stdin: Option<quickshell::proc::Stdin>,
     stdout_buf: Vec<u8>,
     stderr_buf: Vec<u8>,
 }

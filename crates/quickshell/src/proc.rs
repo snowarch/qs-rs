@@ -1,12 +1,14 @@
 //! Child process plumbing shared by `Process` and `Quickshell.execDetached`. Pure Rust: spawning,
-//! pipe reader threads, environment rules, and conversion of exec() arguments.
+//! one I/O thread for every child, environment rules, and conversion of exec() arguments.
 
 use cxx_qt_lib::{QHash, QHashPair_QString_QVariant, QMap, QMapPair_QString_QVariant, QString, QStringList, QVariant};
 
 type QVariantMap = QMap<QMapPair_QString_QVariant>;
-use std::io::{Read, Write};
-use std::process::{Command, Stdio};
-use std::sync::mpsc::{Sender, channel};
+use std::collections::HashMap;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 
 pub enum Event {
@@ -26,7 +28,23 @@ pub struct Context {
 
 pub struct Spawned {
     pub pid: u32,
-    pub stdin: Option<Sender<Vec<u8>>>,
+    pub stdin: Option<Stdin>,
+}
+
+/// Write end of a child's stdin; dropping it closes the pipe.
+pub struct Stdin(u64);
+
+impl Stdin {
+    pub fn send(&self, data: Vec<u8>) -> Result<(), ()> {
+        reactor().command(Cmd::Write(self.0, data));
+        Ok(())
+    }
+}
+
+impl Drop for Stdin {
+    fn drop(&mut self) {
+        reactor().command(Cmd::CloseStdin(self.0));
+    }
 }
 
 fn command(ctx: &Context) -> Command {
@@ -67,53 +85,12 @@ pub fn spawn(
     cmd.stderr(if want_err { Stdio::piped() } else { Stdio::null() });
     let mut child = cmd.spawn()?;
     let pid = child.id();
-    let emit = std::sync::Arc::new(emit);
-
-    let reader = |mut pipe: Box<dyn Read + Send>, wrap: fn(Vec<u8>) -> Event, emit: std::sync::Arc<dyn Fn(Event) + Send + Sync>| {
-        thread::spawn(move || {
-            let mut buf = vec![0u8; 64 * 1024];
-            loop {
-                match pipe.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => emit(wrap(buf[..n].to_vec())),
-                }
-            }
-        })
-    };
-    let mut readers = Vec::new();
-    if let Some(out) = child.stdout.take() {
-        readers.push(reader(Box::new(out), Event::Stdout, emit.clone()));
-    }
-    if let Some(err) = child.stderr.take() {
-        readers.push(reader(Box::new(err), Event::Stderr, emit.clone()));
-    }
-    let stdin = child.stdin.take().map(|mut pipe| {
-        let (tx, rx) = channel::<Vec<u8>>();
-        thread::spawn(move || {
-            for data in rx {
-                if pipe.write_all(&data).and_then(|_| pipe.flush()).is_err() {
-                    break;
-                }
-            }
-        });
-        tx
-    });
-    thread::spawn(move || {
-        let status = child.wait();
-        for r in readers {
-            let _ = r.join();
-        }
-        use std::os::unix::process::ExitStatusExt;
-        let (code, crashed) = match status {
-            Ok(s) => match s.code() {
-                Some(c) => (c, false),
-                None => (s.signal().unwrap_or(0), true),
-            },
-            Err(_) => (-1, true),
-        };
-        emit(Event::Exited { code, crashed });
-    });
-    Ok(Spawned { pid, stdin })
+    let out = child.stdout.take().map(OwnedFd::from);
+    let err = child.stderr.take().map(OwnedFd::from);
+    let inp = child.stdin.take().map(OwnedFd::from);
+    let has_in = inp.is_some();
+    let id = reactor().add(child, out, err, inp, Some(Box::new(emit)))?;
+    Ok(Spawned { pid, stdin: has_in.then_some(Stdin(id)) })
 }
 
 pub fn spawn_detached(ctx: &Context) {
@@ -124,10 +101,189 @@ pub fn spawn_detached(ctx: &Context) {
     cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     use std::os::unix::process::CommandExt;
     cmd.process_group(0);
-    match cmd.spawn() {
-        // Reap in the background so the child never lingers as a zombie.
-        Ok(mut child) => drop(thread::spawn(move || child.wait())),
-        Err(e) => eprintln!("Failed to start detached process {:?}: {e}", ctx.command),
+    // Reaped by the reactor so the child never lingers as a zombie.
+    let started = cmd.spawn().and_then(|child| reactor().add(child, None, None, None, None));
+    if let Err(e) = started {
+        eprintln!("Failed to start detached process {:?}: {e}", ctx.command);
+    }
+}
+
+// One thread ("qs-proc") serves every child: pipes and exit (pidfd) multiplexed with poll(2),
+// like the event loop QProcess runs on upstream. Per child, output events come in order and
+// `Exited` comes last, after what the pipes held at exit was read; a grandchild that keeps a
+// pipe open does not hold the exit back (QProcess behaves the same).
+
+type Emit = Box<dyn Fn(Event) + Send + Sync>;
+
+enum Cmd {
+    Add(u64, Box<Child_>),
+    Write(u64, Vec<u8>),
+    CloseStdin(u64),
+}
+
+struct Child_ {
+    child: Child,
+    pidfd: OwnedFd,
+    out: Option<OwnedFd>,
+    err: Option<OwnedFd>,
+    inp: Option<OwnedFd>,
+    pending: Vec<u8>,
+    close_in: bool,
+    emit: Option<Emit>,
+}
+
+struct Reactor {
+    cmds: Mutex<Vec<Cmd>>,
+    wake: OwnedFd,
+    next: AtomicU64,
+}
+
+fn reactor() -> &'static Reactor {
+    static R: OnceLock<Reactor> = OnceLock::new();
+    R.get_or_init(|| {
+        let wake = unsafe { OwnedFd::from_raw_fd(libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK)) };
+        thread::Builder::new().name("qs-proc".into()).spawn(run).expect("process reactor thread");
+        Reactor { cmds: Mutex::new(Vec::new()), wake, next: AtomicU64::new(1) }
+    })
+}
+
+impl Reactor {
+    fn command(&self, cmd: Cmd) {
+        self.cmds.lock().unwrap().push(cmd);
+        let one: u64 = 1;
+        unsafe { libc::write(self.wake.as_raw_fd(), (&raw const one).cast(), 8) };
+    }
+
+    fn add(&self, child: Child, out: Option<OwnedFd>, err: Option<OwnedFd>, inp: Option<OwnedFd>, emit: Option<Emit>) -> std::io::Result<u64> {
+        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, child.id() as libc::pid_t, 0) };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let pidfd = unsafe { OwnedFd::from_raw_fd(fd as RawFd) };
+        for f in [&out, &err, &inp].into_iter().flatten() {
+            unsafe { libc::fcntl(f.as_raw_fd(), libc::F_SETFL, libc::fcntl(f.as_raw_fd(), libc::F_GETFL) | libc::O_NONBLOCK) };
+        }
+        let id = self.next.fetch_add(1, Ordering::Relaxed);
+        let c = Child_ { child, pidfd, out, err, inp, pending: Vec::new(), close_in: false, emit };
+        self.command(Cmd::Add(id, Box::new(c)));
+        Ok(id)
+    }
+}
+
+/// Reads what `fd` has now. Returns false once it reached EOF or failed.
+fn drain(fd: &OwnedFd, wrap: fn(Vec<u8>) -> Event, emit: &Option<Emit>, once: bool) -> bool {
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = unsafe { libc::read(fd.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
+        if n > 0 {
+            if let Some(e) = emit {
+                e(wrap(buf[..n as usize].to_vec()));
+            }
+            if once {
+                return true;
+            }
+        } else if n < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::WouldBlock {
+            return true;
+        } else if n < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        } else {
+            return false;
+        }
+    }
+}
+
+fn run() {
+    let r = reactor();
+    let mut procs: HashMap<u64, Child_> = HashMap::new();
+    let mut fds: Vec<libc::pollfd> = Vec::new();
+    let mut slots: Vec<(u64, u8)> = Vec::new(); // (child id, 0 pidfd / 1 out / 2 err / 3 in)
+    loop {
+        for cmd in std::mem::take(&mut *r.cmds.lock().unwrap()) {
+            match cmd {
+                Cmd::Add(id, c) => drop(procs.insert(id, *c)),
+                Cmd::Write(id, data) => {
+                    if let Some(c) = procs.get_mut(&id) {
+                        c.pending.extend(data);
+                    }
+                }
+                Cmd::CloseStdin(id) => {
+                    if let Some(c) = procs.get_mut(&id) {
+                        c.close_in = true;
+                    }
+                }
+            }
+        }
+        fds.clear();
+        slots.clear();
+        fds.push(libc::pollfd { fd: r.wake.as_raw_fd(), events: libc::POLLIN, revents: 0 });
+        slots.push((0, 255));
+        for (&id, c) in procs.iter_mut() {
+            if c.close_in && c.pending.is_empty() {
+                c.inp = None;
+            }
+            fds.push(libc::pollfd { fd: c.pidfd.as_raw_fd(), events: libc::POLLIN, revents: 0 });
+            slots.push((id, 0));
+            for (slot, fd, events) in [(1, &c.out, libc::POLLIN), (2, &c.err, libc::POLLIN)] {
+                if let Some(fd) = fd {
+                    fds.push(libc::pollfd { fd: fd.as_raw_fd(), events, revents: 0 });
+                    slots.push((id, slot));
+                }
+            }
+            if let Some(fd) = c.inp.as_ref().filter(|_| !c.pending.is_empty()) {
+                fds.push(libc::pollfd { fd: fd.as_raw_fd(), events: libc::POLLOUT, revents: 0 });
+                slots.push((id, 3));
+            }
+        }
+        if unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) } < 0 {
+            continue;
+        }
+        let mut exited = Vec::new();
+        for (pfd, &(id, slot)) in fds.iter().zip(&slots) {
+            if pfd.revents == 0 {
+                continue;
+            }
+            if slot == 255 {
+                let mut v = 0u64;
+                unsafe { libc::read(r.wake.as_raw_fd(), (&raw mut v).cast(), 8) };
+                continue;
+            }
+            let Some(c) = procs.get_mut(&id) else { continue };
+            match slot {
+                0 => exited.push(id),
+                1 if !c.out.as_ref().is_some_and(|f| drain(f, Event::Stdout, &c.emit, true)) => c.out = None,
+                2 if !c.err.as_ref().is_some_and(|f| drain(f, Event::Stderr, &c.emit, true)) => c.err = None,
+                3 => {
+                    let fd = c.inp.as_ref().unwrap().as_raw_fd();
+                    let n = unsafe { libc::write(fd, c.pending.as_ptr().cast(), c.pending.len()) };
+                    if n > 0 {
+                        c.pending.drain(..n as usize);
+                    } else if std::io::Error::last_os_error().kind() != std::io::ErrorKind::WouldBlock {
+                        c.pending.clear();
+                        c.inp = None;
+                    }
+                }
+                _ => {}
+            }
+        }
+        for id in exited {
+            let Some(mut c) = procs.remove(&id) else { continue };
+            for (fd, wrap) in [(&c.out, Event::Stdout as fn(Vec<u8>) -> Event), (&c.err, Event::Stderr)] {
+                if let Some(fd) = fd {
+                    drain(fd, wrap, &c.emit, false);
+                }
+            }
+            use std::os::unix::process::ExitStatusExt;
+            let (code, crashed) = match c.child.try_wait() {
+                Ok(Some(s)) => match s.code() {
+                    Some(code) => (code, false),
+                    None => (s.signal().unwrap_or(0), true),
+                },
+                _ => (-1, true),
+            };
+            if let Some(e) = &c.emit {
+                e(Event::Exited { code, crashed });
+            }
+        }
     }
 }
 
@@ -180,4 +336,70 @@ pub fn context_from_variant(v: &QVariant) -> ExecArgs {
         return out;
     }
     ExecArgs { command: string_list(v), ..Default::default() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc::{Receiver, channel};
+    use std::time::Duration;
+
+    fn run(cmd: &[&str], want_in: bool) -> (Spawned, Receiver<Event>) {
+        let ctx = Context { command: cmd.iter().map(|s| s.to_string()).collect(), ..Default::default() };
+        let (tx, rx) = channel();
+        let tx = Mutex::new(tx);
+        let spawned = spawn(&ctx, true, true, want_in, move |e| drop(tx.lock().unwrap().send(e))).unwrap();
+        (spawned, rx)
+    }
+
+    /// Collects stdout until Exited; panics if it takes longer than `secs`.
+    fn finish(rx: &Receiver<Event>, secs: u64) -> (String, i32) {
+        let mut out = Vec::new();
+        loop {
+            match rx.recv_timeout(Duration::from_secs(secs)).expect("no exit in time") {
+                Event::Stdout(d) => out.extend(d),
+                Event::Stderr(_) => {}
+                Event::Exited { code, .. } => return (String::from_utf8(out).unwrap(), code),
+            }
+        }
+    }
+
+    fn threads_named(name: &str) -> usize {
+        std::fs::read_dir("/proc/self/task")
+            .unwrap()
+            .flatten()
+            .filter(|t| std::fs::read_to_string(t.path().join("comm")).is_ok_and(|c| c.trim() == name))
+            .count()
+    }
+
+    #[test]
+    fn output_then_exit() {
+        let (_s, rx) = run(&["sh", "-c", "echo one; echo two >&2; echo three; exit 4"], false);
+        assert_eq!(finish(&rx, 5), ("one\nthree\n".into(), 4));
+    }
+
+    #[test]
+    fn grandchild_holding_the_pipe_does_not_delay_exit() {
+        let (_s, rx) = run(&["sh", "-c", "sleep 5 & echo hi; exit 3"], false);
+        assert_eq!(finish(&rx, 2), ("hi\n".into(), 3));
+    }
+
+    #[test]
+    fn stdin_round_trip_and_close() {
+        let (s, rx) = run(&["cat"], true);
+        let stdin = s.stdin.unwrap();
+        stdin.send(b"abc".to_vec()).unwrap();
+        drop(stdin);
+        assert_eq!(finish(&rx, 5), ("abc".into(), 0));
+    }
+
+    #[test]
+    fn one_thread_for_many_children() {
+        let runs: Vec<_> = (0..20).map(|_| run(&["sh", "-c", "sleep 0.3; echo ok"], true)).collect();
+        assert_eq!(threads_named("qs-proc"), 1);
+        assert!(std::fs::read_dir("/proc/self/task").unwrap().count() < 15);
+        for (_s, rx) in &runs {
+            assert_eq!(finish(rx, 5), ("ok\n".into(), 0));
+        }
+    }
 }
