@@ -2,6 +2,7 @@
 name = "qs_wayland"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 links = "qs_wayland"
 
 [dependencies]

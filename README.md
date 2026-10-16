@@ -48,6 +48,11 @@ cargo build --release      # Qt 6, LayerShellQt and a C++ compiler
 scripts/test.sh            # every tests/qml/*.qml, isolated HOME and XDG dirs
 ```
 
+## License
+
+GNU LGPL 3, same as Quickshell: [LICENSE](LICENSE), on top of the GPL in
+[LICENSE-GPL](LICENSE-GPL).
+
 ## Credits
 
 Semantics ported from [Quickshell](https://git.outfoxxed.me/quickshell/quickshell) by outfoxxed

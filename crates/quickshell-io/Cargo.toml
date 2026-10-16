@@ -2,6 +2,7 @@
 name = "quickshell_io"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 links = "quickshell_io"
 
 [dependencies]

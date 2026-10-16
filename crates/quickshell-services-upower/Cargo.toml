@@ -2,6 +2,7 @@
 name = "quickshell_services_upower"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 links = "quickshell_services_upower"
 
 [dependencies]
