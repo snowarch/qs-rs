@@ -57,6 +57,15 @@ inline QQmlEngine* new_engine(const QString& importPath) {
 	return engine;
 }
 
+// Compiles one QML file without creating anything (no singletons, no services) and returns its
+// errors, one per line: what upstream only reports once an area gets instantiated.
+inline rust::String check_file(QQmlEngine& engine, const QString& path) {
+	QQmlComponent component(&engine, QUrl::fromLocalFile(path), QQmlComponent::PreferSynchronous);
+	QStringList out;
+	for (auto& e: component.errors()) out << e.toString();
+	return rust::String(out.join('\n').toStdString());
+}
+
 // Creates the root object from a local file; prints errors and returns null on failure.
 inline QObject* create_root(QQmlEngine& engine, const QString& path) {
 	QQmlComponent component(&engine, QUrl::fromLocalFile(path));

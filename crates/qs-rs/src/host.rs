@@ -16,6 +16,7 @@ pub mod ffi {
         fn create_app(use_qapplication: bool, desktop_settings_aware: bool) -> UniquePtr<QGuiApplication>;
         fn exec_app(app: Pin<&mut QGuiApplication>) -> i32;
         fn new_engine(import_path: &QString) -> *mut QQmlEngine;
+        fn check_file(engine: Pin<&mut QQmlEngine>, path: &QString) -> String;
         unsafe fn create_root(engine: Pin<&mut QQmlEngine>, path: &QString) -> *mut QObject;
     }
 }

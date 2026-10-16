@@ -56,6 +56,24 @@ pub fn malloc_stats() -> Option<(usize, usize)> {
     }
 }
 
+/// Compiles every QML file of the scan through the VFS and prints each distinct error once.
+fn check_shell(scan: &scan::Scan, vfs: &std::path::Path, mut engine: std::pin::Pin<&mut cxx_qt_lib::QQmlEngine>) -> i32 {
+    let mut errors = std::collections::BTreeSet::new();
+    let mut files = 0;
+    for file in scan.files.iter().filter(|f| f.extension().is_some_and(|e| e == "qml")) {
+        let Ok(rel) = file.strip_prefix(&scan.root) else { continue };
+        files += 1;
+        let out = host::ffi::check_file(engine.as_mut(), &qstr(&vfs.join(rel)));
+        let prefix = format!("file://{}/", vfs.display());
+        errors.extend(out.lines().filter(|l| !l.is_empty()).map(|l| l.replace(&prefix, "")));
+    }
+    for e in &errors {
+        println!("{e}");
+    }
+    println!("{files} files checked, {} errors", errors.len());
+    i32::from(!errors.is_empty())
+}
+
 /// Private VFS dirs (`vfs-<pid>`) left behind by instances that were killed.
 fn clean_stale_vfs() {
     for entry in std::fs::read_dir(runtime_dir()).into_iter().flatten().flatten() {
@@ -71,7 +89,7 @@ fn qstr(p: &std::path::Path) -> QString {
     QString::from(&*p.to_string_lossy())
 }
 
-const USAGE: &str = "usage: qs-rs [-p <path> | -c <name>] [-n] [ipc (call <target> <function> [args...] | show)]";
+const USAGE: &str = "usage: qs-rs [-p <path> | -c <name>] [-n] [ipc (call <target> <function> [args...] | show) | check]";
 
 /// Resolves the shell file like quickshell: `-p` file or directory, `-c` a named config under
 /// `$XDG_CONFIG_HOME/quickshell/`, or a bare path argument. Returns the absolute path as given
@@ -204,7 +222,12 @@ fn main() {
         ipc_main(&config, &rest[1..]);
     }
     let shell_id = shell_id_for(&config, &pragmas);
-    {
+    // `check`: compile every QML file the shell reaches, report errors, start nothing.
+    let check = rest.first().is_some_and(|a| a == "check");
+    if check && std::env::var_os("QT_QPA_PLATFORM").is_none() {
+        unsafe { std::env::set_var("QT_QPA_PLATFORM", "offscreen") };
+    }
+    if !check {
         use quickshell::instance;
         let by_path = instance::base_run_dir().join("by-path").join(instance::path_id(&config.to_string_lossy()));
         if no_duplicate && !instance::collect(&by_path, &instance::display_connection()).0.is_empty() {
@@ -234,8 +257,9 @@ fn main() {
     // path) hits across starts. A second instance of the shell gets a private one.
     clean_stale_vfs();
     let (vfs_root, _vfs_lock) = match quickshell::instance::lock_vfs(&quickshell::common::shell().shell_id) {
-        Ok((dir, lock)) => (dir, Some(lock)),
-        Err(_) => {
+        Ok((dir, lock)) if !check => (dir, Some(lock)),
+        _ if check => (runtime_dir().join(format!("vfs-{}", std::process::id())), None),
+        _ => {
             eprintln!("The VFS of this shell is used by another instance; using a private one.");
             (runtime_dir().join(format!("vfs-{}", std::process::id())), None)
         }
@@ -247,6 +271,11 @@ fn main() {
 
     let mut app = host::ffi::create_app(pragmas.use_qapplication, pragmas.desktop_settings_aware);
     let engine = host::ffi::new_engine(&qstr(&vfs_root));
+    if check {
+        let code = check_shell(&scan, &vfs, unsafe { std::pin::Pin::new_unchecked(&mut *engine) });
+        let _ = std::fs::remove_dir_all(&vfs_root);
+        std::process::exit(code);
+    }
     let root = unsafe { host::ffi::create_root(std::pin::Pin::new_unchecked(&mut *engine), &qstr(&entry)) };
     if !root.is_null() {
         let (alloc, resident) = malloc_stats().unwrap_or_default();
