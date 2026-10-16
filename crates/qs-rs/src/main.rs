@@ -25,6 +25,17 @@ fn runtime_dir() -> PathBuf {
     base.join("qs-rs")
 }
 
+/// Private VFS dirs (`vfs-<pid>`) left behind by instances that were killed.
+fn clean_stale_vfs() {
+    for entry in std::fs::read_dir(runtime_dir()).into_iter().flatten().flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name.to_str().and_then(|n| n.strip_prefix("vfs-")) else { continue };
+        if pid.parse::<u32>().is_ok() && !std::path::Path::new("/proc").join(pid).exists() {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
 fn qstr(p: &std::path::Path) -> QString {
     QString::from(&*p.to_string_lossy())
 }
@@ -187,8 +198,17 @@ fn main() {
     quickshell::common::set_shell(info);
     launch::apply_env(&pragmas);
 
+    // The VFS lives at a stable path like upstream's, so Qt's QML disk cache (keyed by file
+    // path) hits across starts. A second instance of the shell gets a private one.
+    clean_stale_vfs();
+    let (vfs_root, _vfs_lock) = match quickshell::instance::lock_vfs(&quickshell::common::shell().shell_id) {
+        Ok((dir, lock)) => (dir, Some(lock)),
+        Err(_) => {
+            eprintln!("The VFS of this shell is used by another instance; using a private one.");
+            (runtime_dir().join(format!("vfs-{}", std::process::id())), None)
+        }
+    };
     let scan = scan::Scan::new(&root_file).expect("scan failed");
-    let vfs_root = runtime_dir().join(format!("vfs-{}", std::process::id()));
     let vfs = vfs_root.join("qs");
     scan.write_vfs(&vfs).expect("vfs write failed");
     let entry = vfs.join(root_file.strip_prefix(&scan.root).unwrap());
@@ -197,6 +217,8 @@ fn main() {
     let engine = host::ffi::new_engine(&qstr(&vfs_root));
     let root = unsafe { host::ffi::create_root(std::pin::Pin::new_unchecked(&mut *engine), &qstr(&entry)) };
     let code = if root.is_null() { 1 } else { host::ffi::exec_app(app.pin_mut()) };
-    let _ = std::fs::remove_dir_all(&vfs_root);
+    if _vfs_lock.is_none() {
+        let _ = std::fs::remove_dir_all(&vfs_root);
+    }
     std::process::exit(code);
 }

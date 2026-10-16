@@ -168,6 +168,18 @@ pub fn create(info: InstanceInfo) -> std::io::Result<&'static Path> {
     Ok(&CURRENT.get().unwrap().dir)
 }
 
+/// The shell's VFS dir, `<run>/vfs/<shell id>` like upstream, with `tooling.lock` held for the
+/// life of the process (keep the returned file). Err when another instance holds it.
+pub fn lock_vfs(shell_id: &str) -> std::io::Result<(PathBuf, File)> {
+    let dir = base_run_dir().join("vfs").join(shell_id);
+    std::fs::create_dir_all(&dir)?;
+    let lock = File::options().read(true).write(true).create(true).truncate(false).open(dir.join("tooling.lock"))?;
+    if write_lock(&lock, libc::F_SETLK).0 != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok((dir, lock))
+}
+
 /// An instance dir's lock: its InstanceInfo and the pid holding the lock (-1 when dead).
 pub fn check_lock(dir: &Path) -> Option<(i32, InstanceInfo)> {
     let mut file = File::open(dir.join("instance.lock")).ok()?;

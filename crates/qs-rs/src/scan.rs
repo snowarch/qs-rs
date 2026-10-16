@@ -143,11 +143,9 @@ impl Scan {
     }
 
     /// Mirror the shell into `vfs`: real dirs for scanned dirs, symlinks for everything else,
-    /// synthesized qmldir files written in place. Returns the path of the mirrored root file.
+    /// synthesized files written in place. Entries that are already right stay untouched (same
+    /// path and mtime keep Qt's QML disk cache valid across starts); stale ones are removed.
     pub fn write_vfs(&self, vfs: &Path) -> io::Result<()> {
-        if vfs.exists() {
-            fs::remove_dir_all(vfs)?;
-        }
         // Every ancestor of a scanned dir inside the root must be a real dir too.
         let mut real: BTreeSet<PathBuf> = BTreeSet::new();
         for d in &self.dirs {
@@ -160,25 +158,64 @@ impl Scan {
                 }
             }
         }
+        let mut keep: BTreeSet<PathBuf> = BTreeSet::new();
         for dir in &real {
-            let rel = dir.strip_prefix(&self.root).unwrap();
-            let out = vfs.join(rel);
-            fs::create_dir_all(&out)?;
+            let out = vfs.join(dir.strip_prefix(&self.root).unwrap());
+            if !fs::symlink_metadata(&out).is_ok_and(|m| m.is_dir()) {
+                remove_any(&out);
+                fs::create_dir_all(&out)?;
+            }
+            keep.insert(out.clone());
             for entry in fs::read_dir(dir)?.flatten() {
                 let src = entry.path();
                 if real.contains(&src) || self.intercepts.contains_key(&src) {
                     continue;
                 }
-                std::os::unix::fs::symlink(&src, out.join(entry.file_name()))?;
+                let dst = out.join(entry.file_name());
+                if fs::read_link(&dst).is_ok_and(|t| t == src) {
+                    keep.insert(dst);
+                    continue;
+                }
+                remove_any(&dst);
+                std::os::unix::fs::symlink(&src, &dst)?;
+                keep.insert(dst);
             }
         }
         for (path, content) in &self.intercepts {
             if let Ok(rel) = path.strip_prefix(&self.root) {
-                fs::write(vfs.join(rel), content)?;
+                let dst = vfs.join(rel);
+                let same = fs::symlink_metadata(&dst).is_ok_and(|m| m.is_file())
+                    && fs::read(&dst).is_ok_and(|c| c == content.as_bytes());
+                if !same {
+                    remove_any(&dst);
+                    fs::write(&dst, content)?;
+                }
+                keep.insert(dst);
             }
         }
-        Ok(())
+        prune(vfs, &keep)
     }
+}
+
+fn remove_any(p: &Path) {
+    match fs::symlink_metadata(p) {
+        Ok(m) if m.is_dir() => drop(fs::remove_dir_all(p)),
+        Ok(_) => drop(fs::remove_file(p)),
+        Err(_) => {}
+    }
+}
+
+/// Removes everything under `dir` that is not in `keep`.
+fn prune(dir: &Path, keep: &BTreeSet<PathBuf>) -> io::Result<()> {
+    for entry in fs::read_dir(dir)?.flatten() {
+        let p = entry.path();
+        if !keep.contains(&p) {
+            remove_any(&p);
+        } else if entry.file_type()?.is_dir() {
+            prune(&p, keep)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -220,6 +257,18 @@ mod tests {
         assert!(vfs.join("services/qmldir").is_file());
         assert!(fs::symlink_metadata(vfs.join("services/Audio.qml")).unwrap().file_type().is_symlink());
         assert!(fs::symlink_metadata(vfs.join("assets")).unwrap().file_type().is_symlink());
+
+        // A second write over the same dir keeps what is right and drops what is stale.
+        let mtime = |p: &str| fs::symlink_metadata(vfs.join(p)).unwrap().modified().unwrap();
+        let before = mtime("services/qmldir");
+        fs::write(vfs.join("stale.qml"), "").unwrap();
+        fs::create_dir_all(vfs.join("gone/deep")).unwrap();
+        fs::write(vfs.join("widgets/qmldir"), "module old\n").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        scan.write_vfs(&vfs).unwrap();
+        assert_eq!(mtime("services/qmldir"), before);
+        assert!(!vfs.join("stale.qml").exists() && !vfs.join("gone").exists());
+        assert_eq!(fs::read_to_string(vfs.join("widgets/qmldir")).unwrap(), "module qs.widgets\nBar 1.0 Bar.qml\n");
         fs::remove_dir_all(&vfs).unwrap();
         fs::remove_dir_all(&dir).unwrap();
     }
