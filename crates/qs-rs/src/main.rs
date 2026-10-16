@@ -8,6 +8,7 @@ extern crate quickshell_bluetooth;
 extern crate quickshell_services_mpris;
 extern crate quickshell_services_notifications;
 extern crate quickshell_services_systemtray;
+extern crate quickshell_widgets;
 
 mod host;
 mod launch;
@@ -97,6 +98,7 @@ fn main() {
     cxx_qt::init_crate!(quickshell_services_mpris);
     cxx_qt::init_crate!(quickshell_services_notifications);
     cxx_qt::init_crate!(quickshell_services_systemtray);
+    cxx_qt::init_crate!(quickshell_widgets);
 
     let mut args = std::env::args().skip(1).peekable();
     let (mut path, mut name, mut rest) = (None, None, Vec::new());

@@ -1037,6 +1037,7 @@ dependencies = [
  "quickshell_services_systemtray",
  "quickshell_services_upower",
  "quickshell_wayland",
+ "quickshell_widgets",
 ]
 
 [[package]]
@@ -1172,6 +1173,16 @@ dependencies = [
  "cxx-qt-build",
  "cxx-qt-lib",
  "quickshell",
+]
+
+[[package]]
+name = "quickshell_widgets"
+version = "0.1.0"
+dependencies = [
+ "cxx",
+ "cxx-qt",
+ "cxx-qt-build",
+ "cxx-qt-lib",
 ]
 
 [[package]]

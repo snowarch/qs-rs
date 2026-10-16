@@ -1,0 +1,13 @@
+[package]
+name = "quickshell_widgets"
+version.workspace = true
+edition.workspace = true
+links = "quickshell_widgets"
+
+[dependencies]
+cxx.workspace = true
+cxx-qt.workspace = true
+cxx-qt-lib.workspace = true
+
+[build-dependencies]
+cxx-qt-build.workspace = true
