@@ -17,6 +17,7 @@
 #include <QtQuick/QQuickItem>
 #include <QtQuick/QQuickWindow>
 #include <QtQml/QQmlContext>
+#include <QtQml/qqmldebug.h>
 #include <functional>
 #include <memory>
 #include "rust/cxx.h"
@@ -43,6 +44,13 @@ inline void install_crash_handler() {
 	void* warm[1];
 	backtrace(warm, 1);
 	for (int sig: {SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGABRT}) signal(sig, crash_handler);
+}
+
+// QML debug/profiler server (qmlprofiler --attach, GammaRay, Qt Creator) on a TCP port.
+inline bool start_qml_debug_server(int port, bool block) {
+	QQmlDebuggingEnabler::enableDebugging(true);
+	return QQmlDebuggingEnabler::startTcpDebugServer(
+	    port, block ? QQmlDebuggingEnabler::WaitForClient : QQmlDebuggingEnabler::DoNotWaitForClient);
 }
 
 inline rust::String qt_plugins_path() {

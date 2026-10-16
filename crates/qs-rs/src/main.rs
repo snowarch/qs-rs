@@ -400,6 +400,15 @@ fn main() {
         host::ffi::set_plugin_path(&qstr(&dir));
     }
     let mut app = host::ffi::create_app(pragmas.use_qapplication, pragmas.desktop_settings_aware);
+    // QSRS_QML_DEBUG=PORT[,block]: QML debug server for qmlprofiler/GammaRay before the engine.
+    if let Ok(spec) = std::env::var("QSRS_QML_DEBUG") {
+        let (port, block) = spec.split_once(',').map_or((spec.as_str(), false), |(p, m)| (p, m == "block"));
+        if let Ok(port) = port.parse() {
+            if !host::ffi::start_qml_debug_server(port, block) {
+                eprintln!("qs-rs: QML debug server failed on port {port}");
+            }
+        }
+    }
     let engine = host::ffi::new_engine(&qstr(&vfs_root));
     if check {
         let code = check_shell(&scan, &vfs, unsafe { std::pin::Pin::new_unchecked(&mut *engine) });
