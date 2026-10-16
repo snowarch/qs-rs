@@ -1,0 +1,14 @@
+[package]
+name = "quickshell_services_upower"
+version.workspace = true
+edition.workspace = true
+links = "quickshell_services_upower"
+
+[dependencies]
+cxx.workspace = true
+cxx-qt.workspace = true
+cxx-qt-lib.workspace = true
+qs_dbus = { path = "../qs-dbus" }
+
+[build-dependencies]
+cxx-qt-build.workspace = true

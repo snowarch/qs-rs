@@ -1,0 +1,7 @@
+[package]
+name = "qs_dbus"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+zbus.workspace = true
