@@ -33,12 +33,12 @@ impl Pixmap {
         let data: Vec<u8> = f[6].try_clone().ok()?.try_into().ok()?;
         let want = if alpha { 4 } else { 3 };
         if bits != 8 || channels != want || w <= 0 || h <= 0 || stride < w * channels {
-            eprintln!("Notifications: unsupported pixmap {w}x{h} stride {stride} bits {bits} channels {channels}");
+            quickshell::qs_log!(warn, "quickshell.dbus", "unsupported pixmap {w}x{h} stride {stride} bits {bits} channels {channels}");
             return None;
         }
         let (w, h, stride, channels) = (w as usize, h as usize, stride as usize, channels as usize);
         if data.len() < stride * (h - 1) + w * channels {
-            eprintln!("Notifications: pixmap data too short");
+            quickshell::qs_log!(warn, "quickshell.dbus", "pixmap data too short");
             return None;
         }
         Some(Self { width: w, height: h, rowstride: stride, channels, data })

@@ -237,7 +237,7 @@ fn globals() -> Option<&'static Globals> {
         let (list, queue) = registry_queue_init::<State>(&conn).ok()?;
         let qh = queue.handle();
         if list.bind::<Manager, _, _>(&qh, 1..=3, ()).is_err() {
-            eprintln!("Cannot manage toplevels as zwlr_foreign_toplevel_management_v1 is not supported by the current compositor.");
+            quickshell::qs_log!(warn, "quickshell.wayland.toplevel", "Cannot manage toplevels as zwlr_foreign_toplevel_management_v1 is not supported by the current compositor.");
             return None;
         }
         let seat = list.bind::<WlSeat, _, _>(&qh, 1..=1, ()).ok();

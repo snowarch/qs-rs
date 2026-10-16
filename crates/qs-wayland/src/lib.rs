@@ -58,7 +58,7 @@ pub fn spawn_dispatch<S: Send + 'static>(name: &str, mut queue: EventQueue<S>, m
         .name(name.into())
         .spawn(move || {
             while let Ok(_) = queue.blocking_dispatch(&mut state) {}
-            eprintln!("{}: wayland queue stopped", std::thread::current().name().unwrap_or("wayland"));
+            quickshell::qs_log!(warn, "quickshell.wayland", "{}: wayland queue stopped", std::thread::current().name().unwrap_or("wayland"));
         })
         .expect("spawn wayland thread");
 }

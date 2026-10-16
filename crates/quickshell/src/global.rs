@@ -154,7 +154,7 @@ impl qobject::QuickshellGlobal {
             clear_environment: args.clear_environment.unwrap_or(false),
         };
         if ctx.command.is_empty() {
-            eprintln!("Cannot start process as command is empty.");
+            crate::qs_log!(warn, "quickshell", "Cannot start process as command is empty.");
             return;
         }
         crate::proc::spawn_detached(&ctx);

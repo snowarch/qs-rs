@@ -78,7 +78,7 @@ fn shared() -> Option<&'static Shared> {
         qs_dbus::rt::spawn(async {
             let res = async { signal_loop(&Bus::Session.connect().await?).await };
             if let Err(e) = res.await {
-                eprintln!("DBusMenu: signal stream failed: {e}");
+                quickshell::qs_log!(warn, "quickshell.dbus.dbusmenu", "signal stream failed: {e}");
             }
         });
         Shared { worker: Worker::new(Bus::Session, "DBusMenu"), routes: Mutex::new(HashMap::new()) }

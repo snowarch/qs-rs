@@ -181,7 +181,7 @@ impl Worker {
         rt::spawn(async move {
             let conn = match bus.connect().await {
                 Ok(c) => c,
-                Err(e) => return eprintln!("{who}: {e}"),
+                Err(e) => return quickshell::qs_log!(warn, "quickshell.dbus", "{who}: cannot connect to the bus: {e}"),
             };
             while let Some(job) = rx.recv().await {
                 job(conn.clone()).await;
@@ -198,7 +198,7 @@ impl Worker {
         self.0.send(Box::new(move |conn| {
             Box::pin(async move {
                 if let Err(e) = f(conn).await {
-                    eprintln!("{what} failed: {e}");
+                    quickshell::qs_log!(warn, "quickshell.dbus", "{what} failed: {e}");
                 }
             })
         }));
@@ -212,11 +212,11 @@ pub async fn claim_name(conn: &zbus::Connection, name: &str, who: &str) -> zbus:
     let mut changes = name_owner_changes(conn, name).await?;
     let try_claim = || async {
         match conn.request_name_with_flags(name, RequestNameFlags::DoNotQueue.into()).await {
-            Ok(_) => eprintln!("{who}: registered {name}"),
+            Ok(_) => quickshell::qs_log!(info, "quickshell.dbus", "{who}: registered {name}"),
             Err(zbus::Error::NameTaken) => {
-                eprintln!("{who}: {name} is owned by another service; registration will be retried when it goes away")
+                quickshell::qs_log!(warn, "quickshell.dbus", "{who}: {name} is owned by another service; registration will be retried when it goes away")
             }
-            Err(e) => eprintln!("{who}: cannot register {name}: {e}"),
+            Err(e) => quickshell::qs_log!(warn, "quickshell.dbus", "{who}: cannot register {name}: {e}"),
         }
     };
     try_claim().await;

@@ -78,7 +78,7 @@ impl cxx_qt::Initialize for qobject::HyprlandIpcCore {
         let qt = self.qt_thread();
         std::thread::spawn(move || {
             let Ok(stream) = UnixStream::connect(&path) else {
-                eprintln!("Hyprland: could not connect to event socket {path}");
+                quickshell::qs_log!(warn, "quickshell.hyprland.ipc", "could not connect to event socket {path}");
                 return;
             };
             for line in BufReader::new(stream).lines().map_while(Result::ok) {
@@ -101,7 +101,7 @@ impl qobject::HyprlandIpcCore {
         let qt = self.qt_thread();
         std::thread::spawn(move || {
             let text = send(&path, &request).unwrap_or_else(|e| {
-                eprintln!("Hyprland: request {request:?} failed: {e}");
+                quickshell::qs_log!(warn, "quickshell.hyprland.ipc", "request {request:?} failed: {e}");
                 String::new()
             });
             let _ = qt.queue(move |this| this.reply(id, QString::from(&text)));

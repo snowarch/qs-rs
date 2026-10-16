@@ -61,6 +61,6 @@ pub fn set_reload_hook(f: impl Fn(bool) + Send + Sync + 'static) {
 pub fn request_reload(hard: bool) {
     match RELOAD.get() {
         Some(f) => f(hard),
-        None => eprintln!("Quickshell.reload(): reload is not available"),
+        None => crate::qs_log!(warn, "quickshell", "Quickshell.reload(): reload is not available"),
     }
 }

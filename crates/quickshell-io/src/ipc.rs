@@ -117,7 +117,7 @@ impl qobject::IpcHandler {
             let mut reg = REGISTRY.lock().unwrap();
             let map = reg.get_or_insert_with(HashMap::new);
             if map.contains_key(&target) {
-                eprintln!("IpcHandler: target {target:?} is already registered, ignoring the duplicate.");
+                quickshell::qs_log!(warn, "quickshell.ipc", "target {target:?} is already registered, ignoring the duplicate.");
                 return;
             }
             map.insert(target.clone(), (id, self.qt_thread()));
@@ -133,7 +133,7 @@ pub fn start_server(instance_dir: &Path) {
     let listener = match UnixListener::bind(&path) {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("IPC: could not start the server on {}: {e}", path.display());
+            quickshell::qs_log!(warn, "quickshell.ipc", "could not start the server on {}: {e}", path.display());
             return;
         }
     };
@@ -283,7 +283,7 @@ fn respond(cmd: Command) -> Option<Vec<u8>> {
     let mut w = Writer::default();
     match cmd {
         Command::Kill => {
-            eprintln!("Exiting due to IPC request.");
+            quickshell::qs_log!(warn, "quickshell.ipc", "Exiting due to IPC request.");
             qobject::ipc_quit();
             return None;
         }
@@ -372,7 +372,7 @@ fn serve(mut stream: UnixStream) {
             };
             buf.drain(..r.pos);
             let Some(cmd) = cmd else {
-                eprintln!("IPC: received an invalid command");
+                quickshell::qs_log!(warn, "quickshell.ipc", "received an invalid command");
                 return;
             };
             if let Some(reply) = respond(cmd) {

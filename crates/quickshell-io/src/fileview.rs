@@ -226,7 +226,7 @@ pub fn read(path: &str, print: bool, cancel: &AtomicBool) -> State {
     let mut state = State { path: path.to_string(), ..Default::default() };
     let warn = |msg: &str| {
         if print {
-            eprintln!("FileView: Read of {path} failed: {msg}");
+            quickshell::qs_log!(warn, "quickshell.io.fileview", "Read of {path} failed: {msg}");
         }
     };
     let p = Path::new(path);
@@ -262,7 +262,7 @@ pub fn write(path: &str, data: &[u8], atomic: bool, print: bool) -> State {
     let mut state = State { path: path.to_string(), data: data.to_vec(), ..Default::default() };
     let warn = |msg: &str| {
         if print {
-            eprintln!("FileView: Write of {path} failed: {msg}");
+            quickshell::qs_log!(warn, "quickshell.io.fileview", "Write of {path} failed: {msg}");
         }
     };
     let p = Path::new(path);
@@ -559,7 +559,7 @@ impl qobject::FileViewInternal {
             return;
         }
         if self.target_path.is_empty() {
-            eprintln!("FileView: Cannot write file, as no path has been specified.");
+            quickshell::qs_log!(warn, "quickshell.io.fileview", "Cannot write file, as no path has been specified.");
             return;
         }
         self.as_mut().rust_mut().write_data = Some(data.clone());
@@ -583,7 +583,7 @@ impl qobject::FileViewInternal {
                 let data = a.serialize();
                 self.set_bytes(data);
             }
-            None => eprintln!("FileView: Cannot call writeAdapter without an adapter."),
+            None => quickshell::qs_log!(warn, "quickshell.io.fileview", "Cannot call writeAdapter without an adapter."),
         }
     }
 

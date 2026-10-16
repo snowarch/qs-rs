@@ -142,7 +142,7 @@ impl qobject::ColorQuantizer {
         std::thread::spawn(move || {
             let pixels = crate::util::load_pixels(&QString::from(&path), x, y, w, h, rescale);
             if pixels.is_empty() {
-                eprintln!("ColorQuantizer: Failed to load image from {path}");
+                crate::qs_log!(warn, "quickshell.colorquantizer", "Failed to load image from {path}");
             }
             let colors = quantize(&pixels, depth, &cancel);
             if cancel.load(Ordering::Acquire) {

@@ -224,7 +224,7 @@ impl qobject::PamContextBase {
     /// Shared guard of the config/configDirectory/user setters.
     fn settable(&self, name: &str) -> bool {
         if self.is_active() {
-            eprintln!("Cannot set {name} on PamContext while it is active.");
+            quickshell::qs_log!(warn, "quickshell.service.pam", "Cannot set {name} on PamContext while it is active.");
             return false;
         }
         true
@@ -265,7 +265,7 @@ impl qobject::PamContextBase {
 
     fn respond(mut self: Pin<&mut Self>, response: &QString) {
         if !(self.is_active() && self.response_required) {
-            eprintln!("PamContext response was ignored as this context does not require one.");
+            quickshell::qs_log!(warn, "quickshell.service.pam", "PamContext response was ignored as this context does not require one.");
             return;
         }
         let line = format!("{}\n", helper::escape(&response.to_string()));
@@ -276,7 +276,7 @@ impl qobject::PamContextBase {
             .as_mut()
             .is_some_and(|c| c.stdin.write_all(line.as_bytes()).and_then(|_| c.stdin.flush()).is_ok());
         if !ok {
-            eprintln!("pam: failed to write response to subprocess.");
+            quickshell::qs_log!(warn, "quickshell.service.pam", "pam: failed to write response to subprocess.");
             self.fail(ERROR_INTERNAL);
         }
     }
@@ -289,7 +289,7 @@ impl qobject::PamContextBase {
     }
 
     fn fail_start(mut self: Pin<&mut Self>, why: String) {
-        eprintln!("Cannot start PamContext because {why}");
+        quickshell::qs_log!(warn, "quickshell.service.pam", "Cannot start PamContext because {why}");
         self.as_mut().rust_mut().target_active = false;
     }
 
@@ -313,7 +313,7 @@ impl qobject::PamContextBase {
         let mut child = match spawn_helper(&dir, &config, &user) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("pam: failed to create subprocess: {e}");
+                quickshell::qs_log!(warn, "quickshell.service.pam", "pam: failed to create subprocess: {e}");
                 self.as_mut().rust_mut().target_active = false;
                 self.as_mut().active_changed();
                 self.as_mut().error(ERROR_INTERNAL);
@@ -414,7 +414,7 @@ impl qobject::PamContextBase {
                 self.pam_message();
             }
             None => {
-                eprintln!("pam: failed to read subprocess request.");
+                quickshell::qs_log!(warn, "quickshell.service.pam", "pam: failed to read subprocess request.");
                 self.fail(ERROR_INTERNAL);
             }
         }

@@ -81,7 +81,7 @@ impl cxx_qt::Initialize for qobject::UPowerCore {
                     async move {
                         match get_all(&conn, UPOWER, &path, DEVICE_IFACE).await {
                             Ok(p) => props(path, json_of(&p)),
-                            Err(e) => eprintln!("UPower: could not read {path}: {e}"),
+                            Err(e) => quickshell::qs_log!(warn, "quickshell.service.upower", "could not read {path}: {e}"),
                         }
                     }
                 };
@@ -122,7 +122,7 @@ impl cxx_qt::Initialize for qobject::UPowerCore {
                 zbus::Result::Ok(())
             };
             if let Err(e) = run.await {
-                eprintln!("UPower: {e}");
+                quickshell::qs_log!(warn, "quickshell.service.upower", "{e}");
             }
         });
     }
@@ -174,7 +174,7 @@ impl cxx_qt::Initialize for qobject::PowerProfilesCore {
                 Err(last.unwrap_or(zbus::Error::Unsupported))
             };
             if let Err(e) = run.await {
-                eprintln!("PowerProfiles: {e}");
+                quickshell::qs_log!(warn, "quickshell.service.powerprofiles", "{e}");
             }
         });
     }
@@ -183,7 +183,7 @@ impl cxx_qt::Initialize for qobject::PowerProfilesCore {
 impl qobject::PowerProfilesCore {
     fn set_active_profile(&self, profile: &QString) {
         let Some((service, path)) = *self.target.lock().unwrap() else {
-            eprintln!("PowerProfiles: cannot set the profile, the daemon is not available");
+            quickshell::qs_log!(warn, "quickshell.service.powerprofiles", "cannot set the profile, the daemon is not available");
             return;
         };
         let profile = profile.to_string();
@@ -194,7 +194,7 @@ impl qobject::PowerProfilesCore {
                 p.call::<_, _, ()>("Set", &(service, "ActiveProfile", Value::from(profile.as_str()))).await
             };
             if let Err(e) = res.await {
-                eprintln!("PowerProfiles: could not set the profile to {profile}: {e}");
+                quickshell::qs_log!(warn, "quickshell.service.powerprofiles", "could not set the profile to {profile}: {e}");
             }
         });
     }

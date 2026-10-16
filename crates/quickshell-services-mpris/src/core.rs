@@ -103,7 +103,7 @@ fn add_player(conn: Connection, qt: Qt, owners: Owners, name: String, unique: St
         for iface in IFACES {
             match get_all(&conn, &name, PATH, iface).await {
                 Ok(p) => emit_props(&qt, &name, iface, &p),
-                Err(e) => return eprintln!("Mpris: cannot read {name}: {e}"),
+                Err(e) => return quickshell::qs_log!(warn, "quickshell.service.mpris.watcher", "cannot read {name}: {e}"),
             }
         }
     });
@@ -190,10 +190,10 @@ impl cxx_qt::Initialize for qobject::MprisCore {
         spawn(async move {
             let conn = match Bus::Session.connect().await {
                 Ok(c) => c,
-                Err(e) => return eprintln!("Mpris: no session bus: {e}"),
+                Err(e) => return quickshell::qs_log!(warn, "quickshell.service.mpris.watcher", "no session bus: {e}"),
             };
             if let Err(e) = run(conn, qt).await {
-                eprintln!("Mpris: {e}");
+                quickshell::qs_log!(warn, "quickshell.service.mpris.watcher", "{e}");
             }
         });
     }

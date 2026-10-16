@@ -72,7 +72,7 @@ impl cxx_qt::Initialize for qobject::BluezCore {
         qs_dbus::rt::spawn(async move {
             let conn = match Bus::System.connect().await {
                 Ok(c) => c,
-                Err(e) => return eprintln!("Bluetooth: no system bus: {e}"),
+                Err(e) => return quickshell::qs_log!(warn, "quickshell.bluetooth", "no system bus: {e}"),
             };
             let res = object_manager::run(&conn, BLUEZ, "/", |event| {
                 let _ = match event {
@@ -91,7 +91,7 @@ impl cxx_qt::Initialize for qobject::BluezCore {
             })
             .await;
             if let Err(e) = res {
-                eprintln!("Bluetooth: {e}");
+                quickshell::qs_log!(warn, "quickshell.bluetooth", "{e}");
             }
         });
     }

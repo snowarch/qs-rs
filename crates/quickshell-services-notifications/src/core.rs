@@ -135,7 +135,7 @@ impl Server {
                     image = format!("file://{}", file.display());
                     st.live.insert(id, Some(file));
                 }
-                Err(e) => eprintln!("Notifications: cannot write image: {e}"),
+                Err(e) => quickshell::qs_log!(warn, "quickshell.service.notifications", "cannot write image: {e}"),
             }
         }
         drop(guard);
@@ -210,7 +210,7 @@ impl qobject::NotificationServerCore {
             conn.object_server().at(PATH, Server { state, qt }).await?;
             qs_dbus::rt::spawn(async move {
                 if let Err(e) = qs_dbus::claim_name(&conn, NAME, "Notifications").await {
-                    eprintln!("Notifications: {e}");
+                    quickshell::qs_log!(warn, "quickshell.service.notifications", "{e}");
                 }
             });
             Ok(())

@@ -86,7 +86,7 @@ fn globals() -> Option<&'static Globals> {
         let notifier = match list.bind::<ExtIdleNotifierV1, _, _>(&qh, 1..=2, ()) {
             Ok(n) => n,
             Err(_) => {
-                eprintln!("Cannot create idle monitor as ext-idle-notify-v1 is not supported by the current compositor.");
+                quickshell::qs_log!(warn, "quickshell.wayland.idle_notify", "Cannot create idle monitor as ext-idle-notify-v1 is not supported by the current compositor.");
                 return None;
             }
         };
@@ -137,7 +137,7 @@ impl qobject::IdleMonitor {
             if let Some(g) = globals() {
                 let ms = (timeout * 1000.0).max(0.0) as u32;
                 if !respect && g.notifier.version() < 2 {
-                    eprintln!("Cannot ignore inhibitors for new idle notifier: Compositor does not support protocol version 2.");
+                    quickshell::qs_log!(warn, "quickshell.wayland.idle_notify", "Cannot ignore inhibitors for new idle notifier: Compositor does not support protocol version 2.");
                     respect = true;
                 }
                 let n = if respect {

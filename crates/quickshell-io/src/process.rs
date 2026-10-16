@@ -224,7 +224,7 @@ impl qobject::Process {
                 self.as_mut().started();
             }
             Err(e) => {
-                eprintln!("Process failed to start, likely because the binary could not be found. Command: {:?}: {e}", ctx.command);
+                quickshell::qs_log!(warn, "quickshell.io.process", "Process failed to start, likely because the binary could not be found. Command: {:?}: {e}", ctx.command);
             }
         }
     }
@@ -287,7 +287,7 @@ impl qobject::Process {
             self.as_mut().set_working_directory(QString::from(dir.as_str()));
         }
         if self.command.len() == 0 {
-            eprintln!("Cannot start process as command is empty.");
+            quickshell::qs_log!(warn, "quickshell.io.process", "Cannot start process as command is empty.");
             return;
         }
         self.set_running(true);
@@ -307,7 +307,7 @@ impl qobject::Process {
 
     fn start_detached(self: Pin<&mut Self>) {
         if self.command.len() == 0 {
-            eprintln!("Cannot start process as command is empty.");
+            quickshell::qs_log!(warn, "quickshell.io.process", "Cannot start process as command is empty.");
             return;
         }
         quickshell::proc::spawn_detached(&self.context());

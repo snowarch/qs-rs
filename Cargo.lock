@@ -1061,6 +1061,7 @@ dependencies = [
 name = "qs_dbus"
 version = "0.1.0"
 dependencies = [
+ "quickshell",
  "zbus",
 ]
 
@@ -1072,6 +1073,7 @@ dependencies = [
  "cxx-qt",
  "cxx-qt-build",
  "cxx-qt-lib",
+ "quickshell",
  "wayland-backend",
  "wayland-client",
  "wayland-protocols",
@@ -1121,6 +1123,7 @@ dependencies = [
  "cxx-qt-build",
  "cxx-qt-lib",
  "qs_dbus",
+ "quickshell",
 ]
 
 [[package]]
@@ -1132,6 +1135,7 @@ dependencies = [
  "cxx-qt-build",
  "cxx-qt-lib",
  "qs_dbus",
+ "quickshell",
  "zbus",
 ]
 
@@ -1168,6 +1172,7 @@ dependencies = [
  "cxx-qt-build",
  "cxx-qt-lib",
  "qs_dbus",
+ "quickshell",
 ]
 
 [[package]]
@@ -1179,6 +1184,7 @@ dependencies = [
  "cxx-qt-build",
  "cxx-qt-lib",
  "qs_dbus",
+ "quickshell",
  "zbus",
 ]
 
@@ -1190,6 +1196,7 @@ dependencies = [
  "cxx-qt",
  "cxx-qt-build",
  "cxx-qt-lib",
+ "quickshell",
 ]
 
 [[package]]
@@ -1201,6 +1208,7 @@ dependencies = [
  "cxx-qt-build",
  "cxx-qt-lib",
  "pipewire",
+ "quickshell",
 ]
 
 [[package]]
@@ -1212,6 +1220,7 @@ dependencies = [
  "cxx-qt-build",
  "cxx-qt-lib",
  "qs_dbus",
+ "quickshell",
  "zbus",
 ]
 
@@ -1224,6 +1233,7 @@ dependencies = [
  "cxx-qt-build",
  "cxx-qt-lib",
  "qs_dbus",
+ "quickshell",
 ]
 
 [[package]]

@@ -104,7 +104,7 @@ pub fn spawn_detached(ctx: &Context) {
     // Reaped by the reactor so the child never lingers as a zombie.
     let started = cmd.spawn().and_then(|child| reactor().add(child, None, None, None, None));
     if let Err(e) = started {
-        eprintln!("Failed to start detached process {:?}: {e}", ctx.command);
+        crate::qs_log!(warn, "quickshell.io.process", "Failed to start detached process {:?}: {e}", ctx.command);
     }
 }
 

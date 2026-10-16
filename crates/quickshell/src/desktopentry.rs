@@ -321,7 +321,7 @@ pub fn desktop_scan() -> Vec<DesktopEntryData> {
 
 fn desktop_exec(command: &Vec<String>, working_directory: &str) {
     if command.is_empty() {
-        eprintln!("Cannot start process as command is empty.");
+        crate::qs_log!(warn, "quickshell.desktopentry", "Cannot start process as command is empty.");
         return;
     }
     crate::proc::spawn_detached(&crate::proc::Context {

@@ -106,7 +106,7 @@ impl Watcher {
             return;
         }
         if !has_owner(conn, &svc).await {
-            return eprintln!("SystemTray: ignoring invalid item registration of {q}");
+            return quickshell::qs_log!(warn, "quickshell.service.sni", "ignoring invalid item registration of {q}");
         }
         self.items.lock().unwrap().push(q.clone());
         let _ = Self::status_notifier_item_registered(&emitter, &q).await;
@@ -122,7 +122,7 @@ impl Watcher {
             return;
         }
         if !has_owner(conn, service).await {
-            return eprintln!("SystemTray: ignoring invalid host registration of {service}");
+            return quickshell::qs_log!(warn, "quickshell.service.sni", "ignoring invalid host registration of {service}");
         }
         self.hosts.lock().unwrap().push(service.to_string());
         let _ = Self::status_notifier_host_registered(&emitter).await;
@@ -163,7 +163,7 @@ async fn run_watcher() -> zbus::Result<()> {
         let conn = conn.clone();
         spawn(async move {
             if let Err(e) = qs_dbus::claim_name(&conn, WATCHER, "SystemTray").await {
-                eprintln!("SystemTray: {e}");
+                quickshell::qs_log!(warn, "quickshell.service.sni", "{e}");
             }
         });
     }
@@ -243,7 +243,7 @@ impl Host {
                     self.add(i).await;
                 }
             }
-            Err(e) => eprintln!("SystemTray: cannot use the StatusNotifierWatcher: {e}"),
+            Err(e) => quickshell::qs_log!(warn, "quickshell.service.sni", "cannot use the StatusNotifierWatcher: {e}"),
         }
     }
 
@@ -258,7 +258,7 @@ impl Host {
         };
         let owner = match owner.await {
             Ok(o) => o.to_string(),
-            Err(e) => return eprintln!("SystemTray: cannot create item for {key}: {e}"),
+            Err(e) => return quickshell::qs_log!(warn, "quickshell.service.sni", "cannot create item for {key}: {e}"),
         };
         let n = {
             let mut s = self.seq.lock().unwrap();
@@ -291,7 +291,7 @@ impl Host {
             let Some((service, path)) = host.items.lock().unwrap().get(&key).map(|i| (i.service.clone(), i.path.clone())) else { return };
             match qs_dbus::get_all(&host.conn, &service, &path, ITEM).await {
                 Ok(p) => host.emit(&key, &p),
-                Err(e) => eprintln!("SystemTray: failed to load tray item {key}: {e}"),
+                Err(e) => quickshell::qs_log!(warn, "quickshell.service.sni", "failed to load tray item {key}: {e}"),
             }
         });
     }
@@ -307,7 +307,7 @@ impl Host {
         let file = self.image_dir.join(format!("{n}-{:016x}.bmp", std::hash::Hasher::finish(&hasher)));
         let written = if file.exists() { Ok(()) } else { std::fs::create_dir_all(&self.image_dir).and_then(|_| std::fs::write(&file, bmp)) };
         if let Err(e) = written {
-            eprintln!("SystemTray: cannot write icon: {e}");
+            quickshell::qs_log!(warn, "quickshell.service.sni", "cannot write icon: {e}");
             return String::new();
         }
         let url = format!("file://{}", file.display());
@@ -430,12 +430,12 @@ impl cxx_qt::Initialize for qobject::SystemTrayCore {
         let qt = self.qt_thread();
         spawn(async {
             if let Err(e) = run_watcher().await {
-                eprintln!("SystemTray: watcher: {e}");
+                quickshell::qs_log!(warn, "quickshell.service.sni", "watcher: {e}");
             }
         });
         spawn(async move {
             if let Err(e) = run_host(qt).await {
-                eprintln!("SystemTray: host: {e}");
+                quickshell::qs_log!(warn, "quickshell.service.sni", "host: {e}");
             }
         });
     }

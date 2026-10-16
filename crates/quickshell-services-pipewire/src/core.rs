@@ -84,7 +84,7 @@ impl cxx_qt::Initialize for qobject::PwCore {
                     let _ = qt.queue(move |this| deliver(this, update));
                 };
                 if let Err(e) = backend::run(emit, rx) {
-                    eprintln!("Pipewire: could not connect: {e}");
+                    quickshell::qs_log!(warn, "quickshell.service.pipewire", "could not connect: {e}");
                 }
             })
             .expect("spawn pipewire thread");
