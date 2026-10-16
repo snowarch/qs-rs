@@ -118,6 +118,7 @@ pub mod object_manager;
 pub enum SetValue {
     Bool(bool),
     U32(u32),
+    F64(f64),
     Str(String),
 }
 
@@ -127,6 +128,7 @@ pub fn set_property(conn: &zbus::blocking::Connection, service: &str, path: &str
     let value = match value {
         SetValue::Bool(b) => Value::Bool(b),
         SetValue::U32(u) => Value::U32(u),
+        SetValue::F64(f) => Value::F64(f),
         SetValue::Str(s) => Value::from(s),
     };
     proxy.call("Set", &(iface, name, value))
@@ -138,5 +140,35 @@ pub fn call(conn: &zbus::blocking::Connection, service: &str, path: &str, iface:
     match object_arg {
         Some(p) => proxy.call(method, &(zbus::zvariant::ObjectPath::try_from(p)?,)),
         None => proxy.call(method, &()),
+    }
+}
+
+type Job = Box<dyn FnOnce(&zbus::blocking::Connection) + Send>;
+
+/// Runs bus calls in the order they were requested, on one thread, so a quick play then pause
+/// can't reach the remote side swapped.
+pub struct Worker(std::sync::mpsc::Sender<Job>);
+
+impl Worker {
+    pub fn new(conn: zbus::blocking::Connection, name: &str) -> Self {
+        let (tx, rx) = std::sync::mpsc::channel::<Job>();
+        std::thread::Builder::new()
+            .name(name.into())
+            .spawn(move || {
+                for job in rx {
+                    job(&conn);
+                }
+            })
+            .expect("spawn dbus worker");
+        Self(tx)
+    }
+
+    /// Queues `f`; an error is logged as "`what` failed".
+    pub fn run(&self, what: String, f: impl FnOnce(&zbus::blocking::Connection) -> zbus::Result<()> + Send + 'static) {
+        let _ = self.0.send(Box::new(move |conn| {
+            if let Err(e) = f(conn) {
+                eprintln!("{what} failed: {e}");
+            }
+        }));
     }
 }

@@ -5,6 +5,7 @@ extern crate quickshell_hyprland;
 extern crate quickshell_services_pipewire;
 extern crate quickshell_services_upower;
 extern crate quickshell_bluetooth;
+extern crate quickshell_services_mpris;
 
 mod host;
 mod launch;
@@ -91,6 +92,7 @@ fn main() {
     cxx_qt::init_crate!(quickshell_services_pipewire);
     cxx_qt::init_crate!(quickshell_services_upower);
     cxx_qt::init_crate!(quickshell_bluetooth);
+    cxx_qt::init_crate!(quickshell_services_mpris);
 
     let mut args = std::env::args().skip(1).peekable();
     let (mut path, mut name, mut rest) = (None, None, Vec::new());

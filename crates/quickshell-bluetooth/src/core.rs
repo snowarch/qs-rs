@@ -1,5 +1,5 @@
 //! BlueZ on the system bus: the object manager stream feeds QML, and property writes and
-//! method calls run on short-lived threads so the Qt thread never waits on the bus.
+//! method calls run in order on one worker thread so the Qt thread never waits on the bus.
 
 #[cxx_qt::bridge]
 pub mod qobject {
@@ -60,18 +60,21 @@ const BLUEZ: &str = "org.bluez";
 
 #[derive(Default)]
 pub struct BluezCoreRust {
-    conn: Arc<OnceLock<Connection>>,
+    worker: Arc<OnceLock<qs_dbus::Worker>>,
 }
 
 impl cxx_qt::Initialize for qobject::BluezCore {
     fn initialize(self: Pin<&mut Self>) {
         let qt = self.qt_thread();
-        let slot = self.conn.clone();
+        let slot = self.worker.clone();
         std::thread::Builder::new()
             .name("bluez".into())
             .spawn(move || {
                 let conn = match Connection::system() {
-                    Ok(c) => slot.get_or_init(|| c).clone(),
+                    Ok(c) => {
+                        slot.get_or_init(|| qs_dbus::Worker::new(c.clone(), "bluez-calls"));
+                        c
+                    }
                     Err(e) => return eprintln!("Bluetooth: no system bus: {e}"),
                 };
                 let res = object_manager::run(&conn, BLUEZ, "/", |event| {
@@ -101,13 +104,9 @@ impl cxx_qt::Initialize for qobject::BluezCore {
 
 impl qobject::BluezCore {
     fn set(&self, path: &QString, iface: &QString, name: &QString, value: SetValue) {
-        let Some(conn) = self.conn.get().cloned() else { return };
+        let Some(worker) = self.worker.get() else { return };
         let (path, iface, name) = (path.to_string(), iface.to_string(), name.to_string());
-        std::thread::spawn(move || {
-            if let Err(e) = qs_dbus::set_property(&conn, BLUEZ, &path, &iface, &name, value) {
-                eprintln!("Bluetooth: could not set {name} on {path}: {e}");
-            }
-        });
+        worker.run(format!("Bluetooth: setting {name} on {path}"), move |conn| qs_dbus::set_property(conn, BLUEZ, &path, &iface, &name, value));
     }
 
     fn set_bool(&self, path: &QString, iface: &QString, name: &QString, value: bool) {
@@ -123,16 +122,14 @@ impl qobject::BluezCore {
     }
 
     fn call(&self, path: &QString, iface: &QString, method: &QString, object_arg: &QString) {
-        let Some(conn) = self.conn.get().cloned() else { return };
+        let Some(worker) = self.worker.get() else { return };
         let (path, iface, method, arg) = (path.to_string(), iface.to_string(), method.to_string(), object_arg.to_string());
         let qt = self.qt_thread();
-        std::thread::spawn(move || {
-            let res = qs_dbus::call(&conn, BLUEZ, &path, &iface, &method, (!arg.is_empty()).then_some(arg.as_str()));
-            let error = res.err().map(|e| e.to_string()).unwrap_or_default();
-            if !error.is_empty() {
-                eprintln!("Bluetooth: {method} on {path} failed: {error}");
-            }
+        worker.run(format!("Bluetooth: {method} on {path}"), move |conn| {
+            let res = qs_dbus::call(conn, BLUEZ, &path, &iface, &method, (!arg.is_empty()).then_some(arg.as_str()));
+            let error = res.as_ref().err().map(|e| e.to_string()).unwrap_or_default();
             let _ = qt.queue(move |this| this.call_finished(QString::from(&path), QString::from(&method), QString::from(&error)));
+            res
         });
     }
 }
