@@ -15,6 +15,7 @@ quickshell_hyprland = { path = "../quickshell-hyprland" }
 quickshell_services_pipewire = { path = "../quickshell-services-pipewire" }
 quickshell_services_upower = { path = "../quickshell-services-upower" }
 quickshell_bluetooth = { path = "../quickshell-bluetooth" }
+quickshell_networking = { path = "../quickshell-networking" }
 quickshell_services_mpris = { path = "../quickshell-services-mpris" }
 quickshell_services_notifications = { path = "../quickshell-services-notifications" }
 quickshell_services_systemtray = { path = "../quickshell-services-systemtray" }

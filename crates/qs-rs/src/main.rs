@@ -5,6 +5,7 @@ extern crate quickshell_hyprland;
 extern crate quickshell_services_pipewire;
 extern crate quickshell_services_upower;
 extern crate quickshell_bluetooth;
+extern crate quickshell_networking;
 extern crate quickshell_services_mpris;
 extern crate quickshell_services_notifications;
 extern crate quickshell_services_systemtray;
@@ -285,6 +286,7 @@ fn run_shell(cli: &cli::Cli, config: PathBuf, started: std::time::Instant) -> i3
     cxx_qt::init_crate!(quickshell_services_pipewire);
     cxx_qt::init_crate!(quickshell_services_upower);
     cxx_qt::init_crate!(quickshell_bluetooth);
+    cxx_qt::init_crate!(quickshell_networking);
     cxx_qt::init_crate!(quickshell_services_mpris);
     cxx_qt::init_crate!(quickshell_services_notifications);
     cxx_qt::init_crate!(quickshell_services_systemtray);

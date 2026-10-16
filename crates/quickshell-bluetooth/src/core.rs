@@ -87,6 +87,7 @@ impl cxx_qt::Initialize for qobject::BluezCore {
                     Event::PropertiesChanged(path, iface, json) => {
                         qt.queue(move |this| this.properties_changed(QString::from(&path), QString::from(&iface), QString::from(&json)))
                     }
+                    Event::Signal(_) => Ok(()),
                 };
             })
             .await;

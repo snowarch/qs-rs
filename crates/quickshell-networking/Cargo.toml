@@ -1,0 +1,17 @@
+[package]
+name = "quickshell_networking"
+version.workspace = true
+edition.workspace = true
+links = "quickshell_networking"
+
+[dependencies]
+quickshell = { path = "../quickshell" }
+cxx.workspace = true
+cxx-qt.workspace = true
+cxx-qt-lib.workspace = true
+qs_dbus = { path = "../qs-dbus" }
+zbus.workspace = true
+libc = "0.2"
+
+[build-dependencies]
+cxx-qt-build.workspace = true

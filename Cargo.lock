@@ -1048,6 +1048,7 @@ dependencies = [
  "quickshell_dbusmenu",
  "quickshell_hyprland",
  "quickshell_io",
+ "quickshell_networking",
  "quickshell_services_mpris",
  "quickshell_services_notifications",
  "quickshell_services_pam",
@@ -1162,6 +1163,20 @@ dependencies = [
  "libc",
  "notify",
  "quickshell",
+]
+
+[[package]]
+name = "quickshell_networking"
+version = "0.1.0"
+dependencies = [
+ "cxx",
+ "cxx-qt",
+ "cxx-qt-build",
+ "cxx-qt-lib",
+ "libc",
+ "qs_dbus",
+ "quickshell",
+ "zbus",
 ]
 
 [[package]]

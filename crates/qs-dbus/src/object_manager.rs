@@ -13,6 +13,8 @@ pub enum Event {
     InterfacesRemoved(String, Vec<String>),
     /// Object path, interface, changed properties as JSON.
     PropertiesChanged(String, String, String),
+    /// Any other signal from the service (NetworkManager's StateChanged, Updated, ...).
+    Signal(zbus::Message),
 }
 
 type Props = HashMap<String, OwnedValue>;
@@ -62,7 +64,7 @@ pub async fn run(conn: &Connection, service: &str, root: &str, emit: impl Fn(Eve
                     emit(Event::PropertiesChanged(path.to_string(), iface, props_json(changed.iter().map(|(k, v)| (k, &**v)))));
                 }
             }
-            _ => {}
+            _ => emit(Event::Signal(msg.clone())),
         }
     }
     Ok(())
