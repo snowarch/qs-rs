@@ -12,6 +12,7 @@ fn runtime_dir() -> PathBuf {
 }
 
 fn main() {
+    quickshell::common::capture_initial_env();
     cxx_qt::init_crate!(quickshell);
     cxx_qt::init_crate!(quickshell_io);
     let arg = std::env::args().nth(1).expect("usage: qs-rs <shell.qml>");
@@ -28,8 +29,7 @@ fn main() {
         engine.as_mut().add_import_path(&QString::from(vfs_root.to_str().unwrap()));
         engine.load(&QUrl::from_local_file(&QString::from(entry.to_str().unwrap())));
     }
-    if let Some(app) = app.as_mut() {
-        app.exec();
-    }
+    let code = app.as_mut().map_or(1, |app| app.exec());
     let _ = std::fs::remove_dir_all(&vfs_root);
+    std::process::exit(code);
 }

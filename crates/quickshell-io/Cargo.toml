@@ -8,6 +8,8 @@ links = "quickshell_io"
 cxx.workspace = true
 cxx-qt.workspace = true
 cxx-qt-lib.workspace = true
+libc = "0.2"
+quickshell = { path = "../quickshell" }
 
 [build-dependencies]
 cxx-qt-build.workspace = true

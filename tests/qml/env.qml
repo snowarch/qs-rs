@@ -4,7 +4,7 @@ import Quickshell
 QtObject {
     Component.onCompleted: {
         const home = Quickshell.env("HOME")
-        console.log("HOME=" + home)
-        Qt.exit(home.endsWith("/home") ? 0 : 1)
+        const missing = Quickshell.env("QSRS_SURELY_UNSET")
+        Qt.exit(home.endsWith("/home") && missing === null ? 0 : 1)
     }
 }
