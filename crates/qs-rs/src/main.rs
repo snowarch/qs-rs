@@ -89,7 +89,8 @@ fn qstr(p: &std::path::Path) -> QString {
     QString::from(&*p.to_string_lossy())
 }
 
-const USAGE: &str = "usage: qs-rs [-p <path> | -c <name>] [-n] [ipc (call <target> <function> [args...] | show) | check]";
+const USAGE: &str = "usage: qs-rs [-p <path> | -c <name>] [-n] [-v] [--no-color] [--log-times] [--log-rules <rules>]\n\
+    [ipc (call <target> <function> [args...] | show) | check | log [file] [-t <n>] [-f] [-r <rules>]]";
 
 /// Resolves the shell file like quickshell: `-p` file or directory, `-c` a named config under
 /// `$XDG_CONFIG_HOME/quickshell/`, or a bare path argument. Returns the absolute path as given
@@ -137,6 +138,48 @@ fn select_instance(config: &std::path::Path) -> quickshell::instance::InstanceIn
             std::process::exit(255);
         }
     }
+}
+
+/// `log`: decodes the newest instance's (live, else dead) detailed log, or a given file.
+fn log_main(config: Option<&std::path::Path>, args: &[String], mut color: bool, mut timestamps: bool) -> ! {
+    use quickshell::instance;
+    let (mut file, mut tail, mut follow, mut rules) = (None, 0usize, false, String::new());
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "-t" | "--tail" => tail = it.next().and_then(|n| n.parse().ok()).unwrap_or(0),
+            "-f" | "--follow" => follow = true,
+            "--no-color" => color = false,
+            "--log-times" => timestamps = true,
+            "-r" | "--rules" => rules = it.next().cloned().unwrap_or_default(),
+            _ if a.starts_with("--rules=") => rules = a["--rules=".len()..].to_string(),
+            _ if file.is_none() && !a.starts_with('-') => file = Some(std::path::PathBuf::from(a)),
+            _ => {
+                eprintln!("{USAGE}");
+                std::process::exit(1);
+            }
+        }
+    }
+    let path = match (file, config) {
+        (Some(f), _) => f,
+        (None, Some(config)) => {
+            let dir = instance::base_run_dir().join("by-path").join(instance::path_id(&config.to_string_lossy()));
+            let (live, _, mut dead) = instance::collect(&dir, &instance::display_connection());
+            dead.sort_by_key(|i| std::cmp::Reverse(i.launch_time_ms));
+            match live.into_iter().next().or_else(|| dead.into_iter().next()) {
+                Some(i) => instance::base_run_dir().join("by-id").join(i.instance_id).join("log.qslog"),
+                None => {
+                    eprintln!("No running instances for \"{}\"", config.display());
+                    std::process::exit(255);
+                }
+            }
+        }
+        (None, None) => {
+            eprintln!("{USAGE}");
+            std::process::exit(1);
+        }
+    };
+    std::process::exit(quickshell::log::read_file(&path, tail, follow, &rules, color, timestamps));
 }
 
 fn ipc_main(config: &std::path::Path, args: &[String]) -> ! {
@@ -196,19 +239,35 @@ fn main() {
 
     let mut args = std::env::args().skip(1).peekable();
     let (mut path, mut name, mut rest, mut no_duplicate) = (None, None, Vec::new(), false);
+    let (mut verbosity, mut color, mut log_times, mut log_rules) = (0u32, true, false, String::new());
     while let Some(a) = args.next() {
         match a.as_str() {
             "-p" | "--path" => path = args.next(),
             "-c" | "--config" => name = args.next(),
             "-n" | "--no-duplicate" => no_duplicate = true,
+            "-v" | "--verbose" => verbosity += 1,
+            "-vv" => verbosity += 2,
+            "--no-color" => color = false,
+            "--log-times" => log_times = true,
+            "--log-rules" => log_rules = args.next().unwrap_or_default(),
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return;
             }
             _ if rest.is_empty() && path.is_none() && a.ends_with(".qml") => path = Some(a),
-            _ => rest.push(a),
+            _ => {
+                rest.push(a);
+                // Everything after a subcommand belongs to it.
+                rest.extend(args.by_ref());
+            }
         }
     }
+    quickshell::log::configure(&log_rules, verbosity, color, log_times);
+    if rest.first().is_some_and(|a| a == "log") {
+        let config = (path.is_some() || name.is_some()).then(|| resolve_shell(path, name).0);
+        log_main(config.as_deref(), &rest[1..], color, log_times);
+    }
+    host::ffi::install_message_handler();
     let (config, root_file) = resolve_shell(path, name);
     let text = std::fs::read_to_string(&root_file).expect("could not read shell file");
     let pragmas = match launch::parse(&text) {
@@ -236,7 +295,12 @@ fn main() {
         }
         let info = instance::new_info(&config.to_string_lossy(), &shell_id, pragmas.app_id.as_deref());
         match instance::create(info) {
-            Ok(dir) => quickshell_io::ipc::start_server(dir),
+            Ok(dir) => {
+                if let Err(e) = quickshell::log::init_files(dir) {
+                    eprintln!("Could not create the instance log files: {e}");
+                }
+                quickshell_io::ipc::start_server(dir)
+            }
             Err(e) => eprintln!("Could not create the instance runtime dir: {e}"),
         }
     }
@@ -278,8 +342,11 @@ fn main() {
     }
     let root = unsafe { host::ffi::create_root(std::pin::Pin::new_unchecked(&mut *engine), &qstr(&entry)) };
     if !root.is_null() {
+        quickshell::log::emit(quickshell::log::Level::Info, "default", "Configuration Loaded".into());
         let (alloc, resident) = malloc_stats().unwrap_or_default();
-        eprintln!(
+        quickshell::qs_log!(
+            info,
+            "quickshell.qsrs",
             "Configuration loaded in {} ms ({} MB allocated, {} MB resident)",
             started.elapsed().as_millis(),
             alloc >> 20,

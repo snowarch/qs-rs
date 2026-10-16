@@ -13,6 +13,7 @@ pub mod ffi {
         #[namespace = ""]
         type QObject = cxx_qt::QObject;
 
+        fn install_message_handler();
         fn create_app(use_qapplication: bool, desktop_settings_aware: bool) -> UniquePtr<QGuiApplication>;
         fn exec_app(app: Pin<&mut QGuiApplication>) -> i32;
         fn new_engine(import_path: &QString) -> *mut QQmlEngine;

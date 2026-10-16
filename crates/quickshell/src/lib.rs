@@ -5,5 +5,6 @@ pub mod desktopentry;
 pub mod global;
 pub mod icons;
 pub mod instance;
+pub mod log;
 pub mod proc;
 pub mod util;

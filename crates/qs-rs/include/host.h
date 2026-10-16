@@ -9,6 +9,7 @@
 #include <QtWidgets/QApplication>
 #include <memory>
 #include "rust/cxx.h"
+#include "quickshell/include/log.h"
 #include "quickshell/include/qsrs.h"
 #include "quickshell/include/reload.h"
 
