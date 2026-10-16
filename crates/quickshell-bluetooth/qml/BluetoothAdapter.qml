@@ -1,4 +1,5 @@
 import QtQml
+import Quickshell
 import Quickshell.Bluetooth
 
 // org.bluez.Adapter1. Writable properties are sent to BlueZ; the confirmed value comes back
@@ -13,7 +14,7 @@ QtObject {
     property bool discovering: false
     property bool pairable: false
     property int pairableTimeout: 0
-    readonly property QtObject devices: QtObject { property list<BluetoothDevice> values }
+    readonly property QtObject devices: ObjectModel {}
     readonly property string adapterId: dbusPath.slice(dbusPath.lastIndexOf("/") + 1)
     property string dbusPath
     property bool _syncing: false

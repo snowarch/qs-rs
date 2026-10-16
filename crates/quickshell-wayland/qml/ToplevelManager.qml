@@ -6,7 +6,7 @@ import Quickshell.Wayland
 // Toplevels in the order they became ready; one Toplevel per handle, removed when it closes.
 QtObject {
     id: root
-    readonly property QtObject toplevels: QtObject { property list<Toplevel> values }
+    readonly property QtObject toplevels: ObjectModel {}
     readonly property Toplevel activeToplevel: _active
 
     property Toplevel _active: null

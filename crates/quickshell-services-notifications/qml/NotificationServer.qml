@@ -1,4 +1,5 @@
 import QtQml
+import Quickshell
 import Quickshell.Services.Notifications
 
 // Serves org.freedesktop.Notifications through NotificationServerCore. Notifications are kept
@@ -16,7 +17,7 @@ QtObject {
     property bool imageSupported: false
     property bool inlineReplySupported: false
     property list<string> extraHints
-    readonly property QtObject trackedNotifications: QtObject { property list<Notification> values }
+    readonly property QtObject trackedNotifications: ObjectModel {}
 
     signal notification(Notification notification)
 
@@ -69,7 +70,7 @@ QtObject {
                 n.destroy()
             } else {
                 root._byId[id] = n
-                root.trackedNotifications.values.push(n)
+                root.trackedNotifications.values = [...root.trackedNotifications.values, n]
             }
         }
         function onCloseRequested(id) {

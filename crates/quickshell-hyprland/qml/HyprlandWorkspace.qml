@@ -1,4 +1,5 @@
 import QtQml
+import Quickshell
 
 QtObject {
     property int id: -1
@@ -9,6 +10,6 @@ QtObject {
     property bool hasFullscreen: false
     property var lastIpcObject: ({})
     property QtObject monitor: null
-    property QtObject toplevels: QtObject { property list<QtObject> values }
+    property QtObject toplevels: ObjectModel {}
     function activate() { Hyprland.dispatch("workspace " + (id > 0 ? id : "name:" + name)) }
 }

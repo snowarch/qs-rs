@@ -1,5 +1,6 @@
 pragma Singleton
 import QtQml
+import Quickshell
 import Quickshell.Bluetooth
 
 // BlueZ objects from BluezCore's object manager stream, one QML object per D-Bus path.
@@ -7,8 +8,8 @@ import Quickshell.Bluetooth
 QtObject {
     id: root
     readonly property BluetoothAdapter defaultAdapter: adapters.values[0] ?? null
-    readonly property QtObject adapters: QtObject { property list<BluetoothAdapter> values }
-    readonly property QtObject devices: QtObject { property list<BluetoothDevice> values }
+    readonly property QtObject adapters: ObjectModel {}
+    readonly property QtObject devices: ObjectModel {}
 
     property var _adapters: ({})
     property var _devices: ({})

@@ -13,9 +13,9 @@ QtObject {
     property QtObject focusedMonitor: null
     property QtObject focusedWorkspace: null
     property QtObject activeToplevel: null
-    readonly property QtObject monitors: QtObject { property list<QtObject> values }
-    readonly property QtObject workspaces: QtObject { property list<QtObject> values }
-    readonly property QtObject toplevels: QtObject { property list<QtObject> values }
+    readonly property QtObject monitors: ObjectModel {}
+    readonly property QtObject workspaces: ObjectModel {}
+    readonly property QtObject toplevels: ObjectModel {}
 
     signal rawEvent(var event)
 

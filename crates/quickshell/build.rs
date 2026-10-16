@@ -11,6 +11,7 @@ fn main() {
     .cpp_file("include/window.h")
     .cpp_file("include/clipboard.h")
     .cpp_file("include/scriptmodel.h")
+    .cpp_file("include/objectmodel.h")
     .files(["src/global.rs", "src/util.rs", "src/colorquantizer.rs"])
     .build()
     .export();

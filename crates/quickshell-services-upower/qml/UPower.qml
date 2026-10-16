@@ -1,5 +1,6 @@
 pragma Singleton
 import QtQml
+import Quickshell
 import Quickshell.Services.UPower
 
 // Devices from UPowerCore, kept by object path. `devices` holds devices once their first
@@ -7,7 +8,7 @@ import Quickshell.Services.UPower
 QtObject {
     id: root
     readonly property UPowerDevice displayDevice: UPowerDevice {}
-    readonly property QtObject devices: QtObject { property list<UPowerDevice> values }
+    readonly property QtObject devices: ObjectModel {}
     property bool onBattery: false
 
     property string _displayPath

@@ -1,11 +1,12 @@
 pragma Singleton
 import QtQml
+import Quickshell
 import Quickshell.Services.Mpris
 
 // Players by bus name; a player joins `players` once both of its interfaces were read.
 QtObject {
     id: root
-    readonly property QtObject players: QtObject { property list<MprisPlayer> values }
+    readonly property QtObject players: ObjectModel {}
 
     property var _players: ({})
     property var _pending: ({})

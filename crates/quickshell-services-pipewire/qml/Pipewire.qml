@@ -1,14 +1,15 @@
 pragma Singleton
 import QtQml
+import Quickshell
 import Quickshell.Services.Pipewire
 
 // PipeWire graph built from PwCore's updates: one object per node, link and link group, kept
 // by id so references stay valid. Model changes are flushed once per event loop turn.
 QtObject {
     id: root
-    readonly property QtObject nodes: QtObject { property list<PwNode> values }
-    readonly property QtObject links: QtObject { property list<PwLink> values }
-    readonly property QtObject linkGroups: QtObject { property list<PwLinkGroup> values }
+    readonly property QtObject nodes: ObjectModel {}
+    readonly property QtObject links: ObjectModel {}
+    readonly property QtObject linkGroups: ObjectModel {}
     readonly property bool ready: PwCore.ready
 
     property PwNode defaultAudioSink: null
