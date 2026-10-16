@@ -1,5 +1,6 @@
 extern crate quickshell;
 extern crate quickshell_io;
+extern crate quickshell_wayland;
 
 mod host;
 mod launch;
@@ -81,6 +82,7 @@ fn main() {
     quickshell::common::capture_initial_env();
     cxx_qt::init_crate!(quickshell);
     cxx_qt::init_crate!(quickshell_io);
+    cxx_qt::init_crate!(quickshell_wayland);
 
     let mut args = std::env::args().skip(1).peekable();
     let (mut path, mut name, mut rest) = (None, None, Vec::new());

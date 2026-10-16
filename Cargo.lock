@@ -452,6 +452,7 @@ dependencies = [
  "cxx-qt-lib",
  "quickshell",
  "quickshell_io",
+ "quickshell_wayland",
 ]
 
 [[package]]
@@ -489,6 +490,17 @@ dependencies = [
  "cxx-qt-lib",
  "libc",
  "notify",
+ "quickshell",
+]
+
+[[package]]
+name = "quickshell_wayland"
+version = "0.1.0"
+dependencies = [
+ "cxx",
+ "cxx-qt",
+ "cxx-qt-build",
+ "cxx-qt-lib",
  "quickshell",
 ]
 

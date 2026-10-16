@@ -9,6 +9,7 @@ cxx-qt.workspace = true
 cxx-qt-lib.workspace = true
 quickshell = { path = "../quickshell" }
 quickshell_io = { path = "../quickshell-io" }
+quickshell_wayland = { path = "../quickshell-wayland" }
 
 [build-dependencies]
 cxx-qt-build.workspace = true

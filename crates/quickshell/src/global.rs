@@ -13,7 +13,7 @@ pub mod qobject {
 
     extern "RustQt" {
         #[qobject]
-        #[qml_element = "Quickshell"]
+        #[qml_element = "QuickshellCore"]
         #[qml_singleton]
         #[qproperty(QString, shell_dir, cxx_name = "shellDir", READ = shell_dir, CONSTANT)]
         #[qproperty(QString, config_dir, cxx_name = "configDir", READ = shell_dir, CONSTANT)]
@@ -68,6 +68,14 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "hasVersion"]
         fn has_version_features(self: &QuickshellGlobal, major: i32, minor: i32, features: &QStringList) -> bool;
+        #[qinvokable]
+        #[cxx_name = "hasThemeIcon"]
+        fn has_theme_icon(self: &QuickshellGlobal, icon: &QString) -> bool;
+        #[qinvokable]
+        #[cxx_name = "hasQtVersion"]
+        fn has_qt_version(self: &QuickshellGlobal, major: i32, minor: i32) -> bool;
+        #[qinvokable]
+        fn reload(self: &QuickshellGlobal, hard: bool);
         #[qinvokable]
         #[cxx_name = "inhibitReloadPopup"]
         fn inhibit_reload_popup(self: &QuickshellGlobal);
@@ -195,4 +203,18 @@ impl qobject::QuickshellGlobal {
     }
 
     fn inhibit_reload_popup(&self) {}
+
+    fn has_theme_icon(&self, icon: &QString) -> bool {
+        crate::util::has_theme_icon(icon)
+    }
+
+    fn has_qt_version(&self, major: i32, minor: i32) -> bool {
+        let v = crate::util::qt_version().to_string();
+        let mut parts = v.split('.').map(|p| p.parse::<i32>().unwrap_or(0));
+        (parts.next().unwrap_or(0), parts.next().unwrap_or(0)) >= (major, minor)
+    }
+
+    fn reload(&self, hard: bool) {
+        crate::common::request_reload(hard);
+    }
 }

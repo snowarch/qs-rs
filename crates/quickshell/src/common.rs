@@ -49,3 +49,18 @@ pub fn shell_dir(var: &str, fallback: &str, shell_id: &str, override_: Option<&s
         None => base.join("quickshell/by-shell").join(shell_id),
     }
 }
+
+type ReloadHook = Box<dyn Fn(bool) + Send + Sync>;
+static RELOAD: OnceLock<ReloadHook> = OnceLock::new();
+
+/// The host installs how `Quickshell.reload()` is carried out.
+pub fn set_reload_hook(f: impl Fn(bool) + Send + Sync + 'static) {
+    let _ = RELOAD.set(Box::new(f));
+}
+
+pub fn request_reload(hard: bool) {
+    match RELOAD.get() {
+        Some(f) => f(hard),
+        None => eprintln!("Quickshell.reload(): reload is not available"),
+    }
+}

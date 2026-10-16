@@ -13,6 +13,8 @@
 namespace qsrs {
 inline QVariant null_variant() { return QVariant::fromValue(nullptr); }
 
+inline QString qt_version() { return QString::fromLatin1(qVersion()); }
+
 inline QString md5_hex(const QString& s) {
 	return QString(QCryptographicHash::hash(s.toUtf8(), QCryptographicHash::Md5).toHex());
 }

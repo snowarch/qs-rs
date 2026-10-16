@@ -15,6 +15,8 @@ mod ffi {
         #[namespace = "qsrs"]
         fn null_variant() -> QVariant;
         #[namespace = "qsrs"]
+        fn qt_version() -> QString;
+        #[namespace = "qsrs"]
         fn md5_hex(s: &QString) -> QString;
         #[namespace = "qsrs"]
         fn has_theme_icon(name: &QString) -> bool;
@@ -24,4 +26,4 @@ mod ffi {
     }
 }
 
-pub use ffi::{has_theme_icon, install_image_providers, md5_hex, null_variant};
+pub use ffi::{has_theme_icon, install_image_providers, md5_hex, null_variant, qt_version};
