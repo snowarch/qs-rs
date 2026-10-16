@@ -10,6 +10,7 @@
 #include <memory>
 #include "rust/cxx.h"
 #include "quickshell/include/qsrs.h"
+#include "quickshell/include/reload.h"
 
 namespace qsrs {
 inline std::unique_ptr<QGuiApplication> create_app(bool useQApplication, bool desktopSettingsAware) {
@@ -50,6 +51,7 @@ inline QQmlEngine* new_engine(const QString& importPath) {
 	engine->addImportPath(importPath);
 	engine->addUrlInterceptor(new RootUrlInterceptor(importPath + "/qs"));
 	install_image_providers(*engine);
+	install_generation(*engine);
 	QObject::connect(engine, &QQmlEngine::quit, QCoreApplication::instance(), &QCoreApplication::quit, Qt::QueuedConnection);
 	QObject::connect(engine, &QQmlEngine::exit, QCoreApplication::instance(), &QCoreApplication::exit, Qt::QueuedConnection);
 	return engine;
@@ -68,6 +70,7 @@ inline QObject* create_root(QQmlEngine& engine, const QString& path) {
 		return nullptr;
 	}
 	QQmlEngine::setObjectOwnership(root, QQmlEngine::CppOwnership);
+	finish_load(engine, root);
 	return root;
 }
 } // namespace qsrs
