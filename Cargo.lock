@@ -1044,6 +1044,7 @@ dependencies = [
  "cxx-qt-lib",
  "quickshell",
  "quickshell_bluetooth",
+ "quickshell_dbusmenu",
  "quickshell_hyprland",
  "quickshell_io",
  "quickshell_services_mpris",
@@ -1120,6 +1121,18 @@ dependencies = [
  "cxx-qt-build",
  "cxx-qt-lib",
  "qs_dbus",
+]
+
+[[package]]
+name = "quickshell_dbusmenu"
+version = "0.1.0"
+dependencies = [
+ "cxx",
+ "cxx-qt",
+ "cxx-qt-build",
+ "cxx-qt-lib",
+ "qs_dbus",
+ "zbus",
 ]
 
 [[package]]

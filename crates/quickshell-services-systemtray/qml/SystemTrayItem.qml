@@ -1,5 +1,6 @@
 import QtQml
 import Quickshell
+import Quickshell.DBusMenu
 import Quickshell.Services.SystemTray
 
 // One StatusNotifierItem; `_key` is the watcher's "service/path".
@@ -20,7 +21,7 @@ QtObject {
     property string tooltipTitle
     property string tooltipDescription
     readonly property bool hasMenu: _menuPath !== "" && _menuPath !== "/NO_DBUSMENU"
-    readonly property var menu: null
+    readonly property QsMenuHandle menu: hasMenu ? _menuHandle : null
     property bool onlyMenu
 
     function activate() { SystemTrayCore.activate(_key) }
@@ -39,6 +40,7 @@ QtObject {
     property string _iconPixmap
     property string _attentionIconPixmap
     property string _menuPath
+    property DBusMenuHandle _menuHandle: DBusMenuHandle {}
 
     function _update(d) {
         id = d.id
@@ -54,6 +56,8 @@ QtObject {
         tooltipTitle = d.tooltipTitle
         tooltipDescription = d.tooltipDescription
         _menuPath = d.menu
+        // _key is "service/path"; the menu lives on the item's service.
+        _menuHandle._setAddress(_key.slice(0, _key.indexOf("/")), hasMenu ? _menuPath : "")
         onlyMenu = d.onlyMenu
     }
 }

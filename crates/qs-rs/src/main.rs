@@ -9,6 +9,7 @@ extern crate quickshell_services_mpris;
 extern crate quickshell_services_notifications;
 extern crate quickshell_services_systemtray;
 extern crate quickshell_services_pam;
+extern crate quickshell_dbusmenu;
 extern crate quickshell_widgets;
 
 mod host;
@@ -105,6 +106,7 @@ fn main() {
     cxx_qt::init_crate!(quickshell_services_notifications);
     cxx_qt::init_crate!(quickshell_services_systemtray);
     cxx_qt::init_crate!(quickshell_services_pam);
+    cxx_qt::init_crate!(quickshell_dbusmenu);
     cxx_qt::init_crate!(quickshell_widgets);
 
     let mut args = std::env::args().skip(1).peekable();
