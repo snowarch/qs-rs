@@ -1,4 +1,5 @@
 import QtQml
+import Quickshell
 
 // Creates one delegate instance per model value, passing it as `modelData`. Instances whose
 // value stays in the model are kept across model changes.
@@ -32,14 +33,14 @@ QtObject {
         const kept = []
         for (const e of _entries) {
             if (values.some(v => v === e.value)) kept.push(e)
-            else e.object.destroy()
+            else QsWindowSupport.destroyOwned(e.object)
         }
         const next = []
         for (const v of values) {
             if (next.some(e => e.value === v)) { console.warn("same value specified twice in Variants, duplicates will be ignored:", v); continue }
             let e = kept.find(k => k.value === v)
             if (!e) {
-                const obj = delegate.createObject(root, { modelData: v })
+                const obj = QsWindowSupport.createOwned(delegate, root, { modelData: v })
                 if (!obj) { console.warn("failed to create variant with object", v); continue }
                 e = { value: v, object: obj }
             }
@@ -50,6 +51,6 @@ QtObject {
     }
 
     onModelChanged: _update()
-    onDelegateChanged: { for (const e of _entries) e.object.destroy(); _entries = []; _update() }
+    onDelegateChanged: { for (const e of _entries) QsWindowSupport.destroyOwned(e.object); _entries = []; _update() }
     Component.onCompleted: { _ready = true; _update() }
 }

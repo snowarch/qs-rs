@@ -5,7 +5,9 @@
 #include <QtCore/QPointer>
 #include <QtGui/QRegion>
 #include <QtGui/QWindow>
+#include <QtQml/QQmlComponent>
 #include <QtQml/QQmlContext>
+#include <QtQml/QQmlEngine>
 #include <QtQml/qqml.h>
 #include <QtQuick/QQuickItem>
 #include <QtQuick/QQuickWindow>
@@ -315,8 +317,29 @@ public:
 		}
 	}
 
+	// Variants instances, as upstream creates them (variants.cpp:154-167): no QML parent while
+	// created (an Item delegate under a QtObject is "not placed in the graphics scene"), then
+	// owned by `owner` as a plain QObject child.
+	Q_INVOKABLE QObject* createOwned(QQmlComponent* component, QObject* owner, const QVariantMap& props) {
+		if (!component) return nullptr;
+		auto* instance =
+		    component->createWithInitialProperties(props, QQmlEngine::contextForObject(component));
+		if (!instance) {
+			qWarning() << component->errorString().toStdString().c_str();
+			return nullptr;
+		}
+		QQmlEngine::setObjectOwnership(instance, QQmlEngine::CppOwnership);
+		instance->setParent(owner);
+		return instance;
+	}
+
 	// `url` resolved against the file that instantiated `object` (upstream's
 	// qmlContext(this)->resolvedUrl for relative paths like LazyLoader.source).
+	// JS cannot destroy() a C++-owned object; createOwned instances go through here.
+	Q_INVOKABLE void destroyOwned(QObject* instance) {
+		if (instance) instance->deleteLater();
+	}
+
 	Q_INVOKABLE QUrl resolvedUrl(QObject* object, const QUrl& url) {
 		auto* ctx = object ? qmlContext(object) : nullptr;
 		return ctx ? ctx->resolvedUrl(url) : url;
