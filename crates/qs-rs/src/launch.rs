@@ -97,6 +97,27 @@ pub fn apply_env(p: &Pragmas) {
     }
 }
 
+/// Upstream's DropExpensiveFonts (also `QS_DROP_EXPENSIVE_FONTS=1`): a fontconfig file in the
+/// instance run dir that includes the user's config and rejects woff/woff2 wrapped fonts.
+pub fn drop_expensive_fonts(p: &Pragmas, run_dir: &std::path::Path) {
+    if !p.drop_expensive_fonts && std::env::var("QS_DROP_EXPENSIVE_FONTS").as_deref() != Ok("1") {
+        return;
+    }
+    let base = std::env::var("FONTCONFIG_FILE").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| "/etc/fonts/fonts.conf".into());
+    let reject = |w: &str| format!("\t\t\t<pattern>\n\t\t\t\t<patelt name=\"fontwrapper\">\n\t\t\t\t\t<string>{w}</string>\n\t\t\t\t</patelt>\n\t\t\t</pattern>\n");
+    let xml = format!(
+        "<?xml version=\"1.0\"?>\n<!DOCTYPE fontconfig SYSTEM \"urn:fontconfig:fonts.dtd\">\n<fontconfig>\n\t<include ignore_missing=\"no\">{base}</include>\n\t<selectfont>\n\t\t<rejectfont>\n{}{}\t\t</rejectfont>\n\t</selectfont>\n</fontconfig>\n",
+        reject("woff"),
+        reject("woff2")
+    );
+    let path = run_dir.join("fonts-override.conf");
+    match std::fs::write(&path, xml) {
+        // SAFETY: called from main before other threads are spawned.
+        Ok(()) => unsafe { std::env::set_var("FONTCONFIG_FILE", &path) },
+        Err(e) => eprintln!("Could not write fontconfig filter to {}: {e}", path.display()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

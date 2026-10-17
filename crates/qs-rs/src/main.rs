@@ -312,19 +312,23 @@ fn run_shell(cli: &cli::Cli, config: PathBuf, started: std::time::Instant) -> i3
             return 255;
         }
     };
-    let pragmas = match launch::parse(&text) {
+    let mut pragmas = match launch::parse(&text) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("{e}");
             return 1;
         }
     };
+    // Upstream launch.cpp: QS_APP_ID and QS_ICON_THEME are the defaults the pragmas override.
+    pragmas.app_id = pragmas.app_id.take().or_else(|| std::env::var("QS_APP_ID").ok().filter(|v| !v.is_empty()));
+    pragmas.icon_theme = pragmas.icon_theme.take().or_else(|| std::env::var("QS_ICON_THEME").ok().filter(|v| !v.is_empty()));
     let shell_id = shell_id_for(&config, &pragmas);
     // `check`: compile every QML file the shell reaches, report errors, start nothing.
     let check = cli.cmd == cli::Command::Check;
     if check && std::env::var_os("QT_QPA_PLATFORM").is_none() {
         unsafe { std::env::set_var("QT_QPA_PLATFORM", "offscreen") };
     }
+    let mut run_dir = None;
     if !check {
         if let Some((running, built)) = command::qt_mismatch() {
             quickshell::qs_log!(
@@ -338,6 +342,7 @@ fn run_shell(cli: &cli::Cli, config: PathBuf, started: std::time::Instant) -> i3
         let info = instance::new_info(&config.to_string_lossy(), &shell_id, pragmas.app_id.as_deref());
         match instance::create(info) {
             Ok(dir) => {
+                run_dir = Some(dir);
                 if let Err(e) = quickshell::log::init_files(dir) {
                     eprintln!("Could not create the instance log files: {e}");
                 }
@@ -358,6 +363,9 @@ fn run_shell(cli: &cli::Cli, config: PathBuf, started: std::time::Instant) -> i3
     }
     quickshell::common::set_shell(info);
     launch::apply_env(&pragmas);
+    if let Some(dir) = run_dir {
+        launch::drop_expensive_fonts(&pragmas, dir);
+    }
 
     // The VFS lives at a stable path like upstream's, so Qt's QML disk cache (keyed by file
     // path) hits across starts. A second instance of the shell gets a private one.
@@ -379,7 +387,9 @@ fn run_shell(cli: &cli::Cli, config: PathBuf, started: std::time::Instant) -> i3
     if let Some(dir) = curated_plugins() {
         host::ffi::set_plugin_path(&qstr(&dir));
     }
+    host::ffi::setup_icons(&QString::from(pragmas.icon_theme.as_deref().unwrap_or_default()));
     let mut app = host::ffi::create_app(pragmas.use_qapplication, pragmas.desktop_settings_aware);
+    host::ffi::configure_app(&QString::from(pragmas.app_id.as_deref().unwrap_or("org.quickshell")), pragmas.native_text_rendering);
     // QML debug server for qmlprofiler/GammaRay before the engine: upstream's `--debug PORT
     // [--waitfordebug]`, or QSRS_QML_DEBUG=PORT[,block].
     let debug = cli.debug_port.map(|p| (p.to_string(), cli.wait_debug)).or_else(|| {

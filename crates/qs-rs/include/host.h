@@ -2,7 +2,9 @@
 // Qt objects the Rust host drives directly but cxx-qt-lib does not wrap: QApplication, a bare
 // QQmlEngine with Quickshell's quit wiring, and root creation through QQmlComponent.
 #include <QtCore/QCoreApplication>
+#include <QtCore/QDir>
 #include <QtGui/QGuiApplication>
+#include <QtGui/QIcon>
 #include <QtQml/QQmlAbstractUrlInterceptor>
 #include <QtQml/QQmlComponent>
 #include <QtQml/QQmlEngine>
@@ -63,6 +65,20 @@ inline rust::String qt_plugins_path() {
 // Replaces Qt's plugin search path (before the application exists).
 inline void set_plugin_path(const QString& path) { QCoreApplication::setLibraryPaths({path}); }
 
+// Upstream launch.cpp: the IconTheme pragma, and $XDG_DATA_DIRS/pixmaps as icon fallback paths
+// (some programs install their icon there, and the platform themes do not search it).
+inline void setup_icons(const QString& theme) {
+	if (!theme.isEmpty()) QIcon::setThemeName(theme);
+	QStringList dataPaths = qEnvironmentVariable("XDG_DATA_DIRS").split(u':', Qt::SkipEmptyParts);
+	if (!qEnvironmentVariableIsSet("XDG_DATA_DIRS")) dataPaths = {"/usr/local/share", "/usr/share"};
+	auto fallback = QIcon::fallbackSearchPaths();
+	for (const auto& path: dataPaths) {
+		auto pixmaps = QDir(path).filePath("pixmaps");
+		if (!fallback.contains(pixmaps)) fallback.push_back(pixmaps);
+	}
+	QIcon::setFallbackSearchPaths(fallback);
+}
+
 inline std::unique_ptr<QGuiApplication> create_app(bool useQApplication, bool desktopSettingsAware) {
 	static int argc = 1;
 	static char arg0[] = "quickshell";
@@ -70,6 +86,15 @@ inline std::unique_ptr<QGuiApplication> create_app(bool useQApplication, bool de
 	QGuiApplication::setDesktopSettingsAware(desktopSettingsAware);
 	if (useQApplication) return std::make_unique<QApplication>(argc, argv);
 	return std::make_unique<QGuiApplication>(argc, argv);
+}
+
+// Upstream launch.cpp after the application exists: the app id surfaces carry, transparent
+// windows, NativeTextRendering, and hidden windows never quit the shell.
+inline void configure_app(const QString& appId, bool nativeTextRendering) {
+	QGuiApplication::setDesktopFileName(appId);
+	QQuickWindow::setDefaultAlphaBuffer(true);
+	if (nativeTextRendering) QQuickWindow::setTextRenderType(QQuickWindow::NativeTextRendering);
+	QGuiApplication::setQuitOnLastWindowClosed(false);
 }
 
 inline int exec_app(QGuiApplication& /*app*/) { return QGuiApplication::exec(); }
