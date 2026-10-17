@@ -12,6 +12,11 @@
 #include <QtCore/QFile>
 #include <QtCore/QLibraryInfo>
 #include <QtCore/QTimer>
+#include <QtCore/QAbstractAnimation>
+#include <QtCore/QChronoTimer>
+#include <QtGui/QScreen>
+#include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <csignal>
 #include <atomic>
@@ -88,6 +93,46 @@ inline std::unique_ptr<QGuiApplication> create_app(bool useQApplication, bool de
 	return std::make_unique<QGuiApplication>(argc, argv);
 }
 
+// The basic render loop (one GL context for every window) installs no animation driver, so QML
+// animations step on QUnifiedTimer's fixed 16 ms tick: ~62 steps a second, which judders on a
+// 75 or 144 Hz screen. Upstream's threaded loop steps them once per frame. This driver ticks at
+// the fastest screen's refresh rate while any animation runs, and sleeps otherwise.
+class DisplayAnimationDriver: public QAnimationDriver {
+public:
+	explicit DisplayAnimationDriver(QObject* parent): QAnimationDriver(parent) {
+		mTimer.setTimerType(Qt::PreciseTimer);
+		QObject::connect(&mTimer, &QChronoTimer::timeout, this, [this] { advance(); });
+		auto watch = [this](QScreen* s) {
+			QObject::connect(s, &QScreen::refreshRateChanged, this, [this] { updateInterval(); });
+			updateInterval();
+		};
+		for (auto* s: QGuiApplication::screens()) watch(s);
+		QObject::connect(qApp, &QGuiApplication::screenAdded, this, watch);
+		QObject::connect(qApp, &QGuiApplication::screenRemoved, this, [this] { updateInterval(); });
+	}
+
+protected:
+	void start() override {
+		QAnimationDriver::start();
+		mTimer.start();
+	}
+	void stop() override {
+		mTimer.stop();
+		QAnimationDriver::stop();
+	}
+
+private:
+	void updateInterval() {
+		qreal hz = 60;
+		for (auto* s: QGuiApplication::screens()) hz = std::max(hz, s->refreshRate());
+		// Tests have no real screen: QSRS_ANIMATION_HZ stands in for one.
+		if (auto forced = qEnvironmentVariableIntValue("QSRS_ANIMATION_HZ"); forced > 0) hz = forced;
+		mTimer.setInterval(std::chrono::nanoseconds(qint64(1e9 / hz)));
+	}
+
+	QChronoTimer mTimer;
+};
+
 // Upstream launch.cpp after the application exists: the app id surfaces carry, transparent
 // windows, NativeTextRendering, and hidden windows never quit the shell.
 inline void configure_app(const QString& appId, bool nativeTextRendering) {
@@ -95,6 +140,10 @@ inline void configure_app(const QString& appId, bool nativeTextRendering) {
 	QQuickWindow::setDefaultAlphaBuffer(true);
 	if (nativeTextRendering) QQuickWindow::setTextRenderType(QQuickWindow::NativeTextRendering);
 	QGuiApplication::setQuitOnLastWindowClosed(false);
+	// QSRS_QT_ANIMATION_TIMER=1 keeps Qt's 16 ms tick (A/B).
+	if (!qEnvironmentVariableIsSet("QSRS_PER_WINDOW_GL") && !qEnvironmentVariableIsSet("QSRS_QT_ANIMATION_TIMER")) {
+		(new DisplayAnimationDriver(qApp))->install();
+	}
 }
 
 inline int exec_app(QGuiApplication& /*app*/) { return QGuiApplication::exec(); }
