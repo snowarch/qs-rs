@@ -14,6 +14,7 @@ extern crate quickshell_services_pam;
 extern crate quickshell_dbusmenu;
 extern crate quickshell_widgets;
 
+mod cachesync;
 mod cli;
 mod command;
 mod host;
@@ -328,6 +329,10 @@ fn run_shell(cli: &cli::Cli, config: PathBuf, started: std::time::Instant) -> i3
     if check && std::env::var_os("QT_QPA_PLATFORM").is_none() {
         unsafe { std::env::set_var("QT_QPA_PLATFORM", "offscreen") };
     }
+    // A check compiles from a private VFS path, so its cache entries could never be hit again.
+    if check {
+        unsafe { std::env::set_var("QML_DISABLE_DISK_CACHE", "1") };
+    }
     let mut run_dir = None;
     if !check {
         if let Some((running, built)) = command::qt_mismatch() {
@@ -363,6 +368,9 @@ fn run_shell(cli: &cli::Cli, config: PathBuf, started: std::time::Instant) -> i3
     }
     quickshell::common::set_shell(info);
     launch::apply_env(&pragmas);
+    if let Some(dir) = cachesync::qt_cache_dir() {
+        cachesync::init(dir);
+    }
     if let Some(dir) = run_dir {
         launch::drop_expensive_fonts(&pragmas, dir);
     }
