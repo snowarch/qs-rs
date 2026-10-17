@@ -19,26 +19,29 @@ inotify thread for every file watcher, one GL context for every window.
 ## Numbers
 
 inir on both runtimes, same config and env, each in its own headless KWin, warm QML cache,
-sampled 20 s after start (mean of the warm runs):
+sampled 20 s after start and after a minute idle (mean of the warm runs, 2026-10-17):
 
 | | Quickshell 0.3.2 | qs-rs | |
 |---|---:|---:|---:|
-| load time | 4042 ms | **632 ms** | 6.4x faster |
-| CPU spent starting | 7.6 s | **4.0 s** | -47% |
-| threads | 94 | **40** | -58% |
-| RSS | 567 MB | **472 MB** | -17% |
-| PSS | 454 MB | **375 MB** | -18% |
-| heap (anon) | 389 MB | **287 MB** | -26% |
-| VRAM | 164 MiB | **148 MiB** | -10% |
+| load time | 3986 ms | **632 ms** | 6.3x faster |
+| CPU spent starting | 7.4 s | **3.8 s** | -49% |
+| CPU over 60 s idle | 785 ms | **665 ms** | -15% |
+| threads | 88 | **38** | -57% |
+| RSS | 566 MB | **478 MB** | -16% |
+| PSS | 427 MB | **353 MB** | -17% |
+| heap (anon) | 380 MB | **285 MB** | -25% |
+| VRAM | 164 MiB | **147 MiB** | -10% |
 
-Same pixels on screen. Ryzen 5000 APU (Vega), Linux 7.2,
+Same pixels on screen: 191 surfaces of inir's three families shot on both. Ryzen 5000 APU (Vega), Linux 7.2,
 Qt 6.12, Mesa 26.2. A single benchmark is never the whole truth, but this one is pretty loud.
 
 ## Status
 
 inir runs on it as a full daily session: bar, dock, panels, notifications, tray and menus,
 PipeWire, MPRIS, UPower, Bluetooth, NetworkManager, Polkit agent, PAM lock screen, session lock,
-toplevels, idle monitor, IPC. Still missing: `ScreencopyView`, `IdleInhibitor` and hot reload.
+toplevels, idle monitor, IPC, hot reload. Animations step at the screen's refresh rate (one GL
+context for every window, so no per-window render threads). Still missing: `ScreencopyView`
+pixels (the type loads, capture is not ported) and `IdleInhibitor`.
 Shells other than inir may trip over types nobody asked for yet.
 
 ## Build
