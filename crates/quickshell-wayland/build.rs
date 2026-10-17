@@ -43,7 +43,7 @@ fn main() {
     let builder = CxxQtBuilder::new_qml_module(
         QmlModule::new("Quickshell.Wayland")
             .version(0, 1)
-            .qml_files(["qml/Toplevel.qml", "qml/WlSessionLockSurface.qml"])
+            .qml_files(["qml/Toplevel.qml", "qml/WlSessionLockSurface.qml", "qml/ScreencopyView.qml"])
             .qml_file(QmlFile::from("qml/ToplevelManager.qml").singleton(true)),
     )
     .qt_module("Quick")
