@@ -2,6 +2,8 @@
 //! own threads and claims the name (retrying when the current owner leaves, like upstream's
 //! service watcher). Notify allocates ids here so it can answer synchronously; the QML server
 //! decides tracking and reports every notification that leaves through `closed`.
+//! The service is one per process, like upstream's NotificationServer::instance(): each shell
+//! generation attaches to it, so a reload neither re-serves the name nor loses notifications.
 
 #[cxx_qt::bridge]
 pub mod qobject {
@@ -16,9 +18,11 @@ pub mod qobject {
         #[qml_singleton]
         type NotificationServerCore = super::NotificationServerCoreRust;
 
-        /// Sets the advertised capabilities (space separated) and starts serving on first call.
+        /// Sets the advertised capabilities (space separated), makes this generation the one that
+        /// gets notifications and starts serving on first call. The first call of a generation
+        /// re-emits the live notifications of the last one (`keep`) or closes them as expired.
         #[qinvokable]
-        fn start(self: &NotificationServerCore, capabilities: &QString);
+        fn start(self: &NotificationServerCore, capabilities: &QString, keep: bool);
         /// A notification left the server: emits NotificationClosed and frees its id.
         #[qinvokable]
         fn closed(self: &NotificationServerCore, id: u32, reason: u32);
@@ -73,26 +77,58 @@ struct State {
     next_id: u32,
     /// Ids the server still holds, with the file of their current pixmap.
     live: HashMap<u32, Option<PathBuf>>,
+    /// The last JSON sent for each live id, re-emitted to the next generation on reload.
+    sent: HashMap<u32, String>,
     capabilities: Vec<String>,
     image_seq: u64,
     image_dir: PathBuf,
 }
 
-pub struct NotificationServerCoreRust {
+/// The generation notifications go to: its core's token and thread. None while none is attached.
+type Target = Arc<Mutex<Option<(u64, Qt)>>>;
+
+struct Shared {
     state: Arc<Mutex<Option<State>>>,
+    target: Target,
     /// Signals go out in order, after the interface is served.
     worker: Worker,
 }
 
+fn shared() -> &'static Shared {
+    static SHARED: std::sync::OnceLock<Shared> = std::sync::OnceLock::new();
+    SHARED.get_or_init(|| Shared { state: Arc::default(), target: Arc::default(), worker: Worker::new(Bus::Session, "Notifications") })
+}
+
+fn queue(target: &Target, f: impl FnOnce(std::pin::Pin<&mut qobject::NotificationServerCore>) + Send + 'static) {
+    if let Some((_, qt)) = target.lock().unwrap().as_ref() {
+        let _ = qt.queue(f);
+    }
+}
+
+pub struct NotificationServerCoreRust {
+    token: u64,
+    attached: std::cell::Cell<bool>,
+}
+
 impl Default for NotificationServerCoreRust {
     fn default() -> Self {
-        Self { state: Arc::default(), worker: Worker::new(Bus::Session, "Notifications") }
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self { token: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed), attached: Default::default() }
+    }
+}
+
+impl Drop for NotificationServerCoreRust {
+    fn drop(&mut self) {
+        let mut target = shared().target.lock().unwrap();
+        if target.as_ref().is_some_and(|(t, _)| *t == self.token) {
+            *target = None;
+        }
     }
 }
 
 struct Server {
     state: Arc<Mutex<Option<State>>>,
-    qt: Qt,
+    target: Target,
 }
 
 #[zbus::interface(name = "org.freedesktop.Notifications")]
@@ -160,7 +196,12 @@ impl Server {
         json.push_str(&format!(",\"expireTimeout\":{expire_timeout},\"image\":"));
         json_string(&image, &mut json);
         json.push('}');
-        let _ = self.qt.queue(move |this| {
+        if let Some(st) = self.state.lock().unwrap().as_mut() {
+            if st.live.contains_key(&id) {
+                st.sent.insert(id, json.clone());
+            }
+        }
+        queue(&self.target, move |this| {
             this.notified(id, QString::from(&json));
             if let Some(f) = stale {
                 let _ = std::fs::remove_file(f);
@@ -172,7 +213,7 @@ impl Server {
     fn close_notification(&self, id: u32) {
         let live = self.state.lock().unwrap().as_ref().is_some_and(|s| s.live.contains_key(&id));
         if live {
-            let _ = self.qt.queue(move |this| this.close_requested(id));
+            queue(&self.target, move |this| this.close_requested(id));
         }
     }
 
@@ -194,20 +235,43 @@ impl Server {
 }
 
 impl qobject::NotificationServerCore {
-    fn start(&self, capabilities: &QString) {
+    fn start(&self, capabilities: &QString, keep: bool) {
         let caps: Vec<String> = capabilities.to_string().split_whitespace().map(String::from).collect();
-        let mut guard = self.state.lock().unwrap();
+        let sh = shared();
+        let first = !self.attached.replace(true);
+        if first {
+            *sh.target.lock().unwrap() = Some((self.token, self.qt_thread()));
+        }
+        let mut guard = sh.state.lock().unwrap();
         if let Some(st) = guard.as_mut() {
             st.capabilities = caps;
+            if !first {
+                return;
+            }
+            // A reload: the last generation's notifications go to this one (upstream switchGeneration).
+            let mut carried: Vec<(u32, String)> = st.sent.iter().map(|(id, j)| (*id, j.clone())).collect();
+            carried.sort_by_key(|(id, _)| *id);
+            drop(guard);
+            if keep {
+                let _ = self.qt_thread().queue(move |mut this| {
+                    for (id, json) in carried {
+                        let json = format!("{},\"lastGeneration\":true}}", &json[..json.len() - 1]);
+                        this.as_mut().notified(id, QString::from(&json));
+                    }
+                });
+            } else {
+                for (id, _) in carried {
+                    self.closed(id, 1);
+                }
+            }
             return;
         }
-        *guard = Some(State { next_id: 1, live: HashMap::new(), capabilities: caps, image_seq: 0, image_dir: image_dir("notifications") });
+        *guard = Some(State { next_id: 1, live: HashMap::new(), sent: HashMap::new(), capabilities: caps, image_seq: 0, image_dir: image_dir("notifications") });
         drop(guard);
 
-        let (state, qt) = (self.state.clone(), self.qt_thread());
-        // Served through the worker so signals emitted from QML queue behind it.
-        self.worker.run("Notifications: serving".into(), move |conn| async move {
-            conn.object_server().at(PATH, Server { state, qt }).await?;
+        let (state, target) = (sh.state.clone(), sh.target.clone());
+        sh.worker.run("Notifications: serving".into(), move |conn| async move {
+            conn.object_server().at(PATH, Server { state, target }).await?;
             qs_dbus::rt::spawn(async move {
                 if let Err(e) = qs_dbus::claim_name(&conn, NAME, "Notifications").await {
                     quickshell::qs_log!(warn, "quickshell.service.notifications", "{e}");
@@ -221,13 +285,14 @@ impl qobject::NotificationServerCore {
     where
         F: std::future::Future<Output = zbus::Result<()>> + Send + 'static,
     {
-        self.worker.run(format!("Notifications: {what}"), move |conn| async move {
+        shared().worker.run(format!("Notifications: {what}"), move |conn| async move {
             let iface = conn.object_server().interface::<_, Server>(PATH).await?;
             f(iface.signal_emitter().clone()).await
         });
     }
     fn closed(&self, id: u32, reason: u32) {
-        if let Some(st) = self.state.lock().unwrap().as_mut() {
+        if let Some(st) = shared().state.lock().unwrap().as_mut() {
+            st.sent.remove(&id);
             if let Some(Some(file)) = st.live.remove(&id) {
                 let _ = std::fs::remove_file(file);
             }

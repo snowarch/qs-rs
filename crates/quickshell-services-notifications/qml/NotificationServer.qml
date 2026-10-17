@@ -42,8 +42,8 @@ QtObject {
     property var _byId: ({})
     property Component _component: Component { Notification {} }
 
-    on_CapabilitiesChanged: if (_live) NotificationServerCore.start(_capabilities)
-    Component.onCompleted: { _live = true; NotificationServerCore.start(_capabilities) }
+    on_CapabilitiesChanged: if (_live) NotificationServerCore.start(_capabilities, keepOnReload)
+    Component.onCompleted: { _live = true; NotificationServerCore.start(_capabilities, keepOnReload) }
 
     function _delete(n, reason) {
         if (_byId[n.id] !== n) return

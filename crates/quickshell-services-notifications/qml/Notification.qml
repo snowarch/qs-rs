@@ -8,7 +8,8 @@ NotificationBase {
     id: n
     property int id
     property bool tracked: false
-    readonly property bool lastGeneration: false
+    // Carried over from the last generation by a reload (keepOnReload).
+    property bool lastGeneration: false
     property real expireTimeout
     property string appName
     property string appIcon
@@ -55,6 +56,7 @@ NotificationBase {
 
     function _update(d) {
         const h = d.hints
+        if (d.lastGeneration) lastGeneration = true
         expireTimeout = d.expireTimeout
         appName = d.appName
         summary = d.summary
