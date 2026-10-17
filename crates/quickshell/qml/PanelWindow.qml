@@ -8,8 +8,9 @@ ProxyWindowBase {
     id: root
     property PanelAnchors anchors: PanelAnchors {}
     property PanelMargins margins: PanelMargins {}
-    property int exclusiveZone: 0
-    property int exclusionMode: ExclusionMode.Auto
+    readonly property QsPanelExclusion _exclusion: QsPanelExclusion {}
+    property alias exclusiveZone: root._exclusion.exclusiveZone
+    property alias exclusionMode: root._exclusion.exclusionMode
     property bool aboveWindows: true
     property bool focusable: false
     color: "white"

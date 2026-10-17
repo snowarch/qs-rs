@@ -52,6 +52,42 @@ enum Enum : quint8 { Normal = 0, Ignore = 1, Auto = 2 };
 Q_ENUM_NS(Enum);
 } // namespace ExclusionMode
 
+// PanelWindow's exclusiveZone/exclusionMode pair, aliased by PanelWindow.qml. Needs a real setter:
+// as in quickshell, every write of exclusiveZone (even of the same value) switches the mode to
+// Normal, so `exclusionMode: Ignore` next to an `exclusiveZone` binding still reserves the zone.
+class QsPanelExclusion: public QObject {
+	Q_OBJECT;
+	Q_PROPERTY(qint32 exclusiveZone READ exclusiveZone WRITE setExclusiveZone NOTIFY exclusiveZoneChanged);
+	Q_PROPERTY(ExclusionMode::Enum exclusionMode READ exclusionMode WRITE setExclusionMode NOTIFY exclusionModeChanged);
+	QML_ELEMENT;
+
+public:
+	explicit QsPanelExclusion(QObject* parent = nullptr): QObject(parent) {}
+
+	[[nodiscard]] qint32 exclusiveZone() const { return this->mZone; }
+	void setExclusiveZone(qint32 zone) {
+		const bool changed = zone != this->mZone;
+		this->mZone = zone;
+		this->setExclusionMode(ExclusionMode::Normal);
+		if (changed) emit this->exclusiveZoneChanged();
+	}
+
+	[[nodiscard]] ExclusionMode::Enum exclusionMode() const { return this->mMode; }
+	void setExclusionMode(ExclusionMode::Enum mode) {
+		if (mode == this->mMode) return;
+		this->mMode = mode;
+		emit this->exclusionModeChanged();
+	}
+
+signals:
+	void exclusiveZoneChanged();
+	void exclusionModeChanged();
+
+private:
+	qint32 mZone = 0;
+	ExclusionMode::Enum mMode = ExclusionMode::Auto;
+};
+
 namespace Edges {
 Q_NAMESPACE;
 QML_NAMED_ELEMENT(Edges);
