@@ -29,6 +29,33 @@ impl Scan {
         let root_file = root_file.canonicalize()?;
         let mut scan = Scan { root: root_file.parent().unwrap().to_path_buf(), ..Default::default() };
         scan.scan_file(&root_file);
+        // Files reached only by URL (Loader.source, Qt.createComponent, inir's getWidgetUrl) are
+        // not in the import graph, yet their `root:` imports need the same rewrite: scan every dir
+        // of the shell that holds QML. Hidden and symlinked dirs are skipped.
+        let mut stack = vec![scan.root.clone()];
+        while let Some(dir) = stack.pop() {
+            let Ok(rd) = fs::read_dir(&dir) else { continue };
+            let mut has_qml = false;
+            let mut lower = Vec::new();
+            for e in rd.flatten() {
+                let name = e.file_name().to_string_lossy().into_owned();
+                let Ok(ft) = e.file_type() else { continue };
+                if ft.is_dir() && !name.starts_with('.') {
+                    stack.push(e.path());
+                } else if ft.is_file() && name.ends_with(".qml") {
+                    has_qml = true;
+                    if !name.starts_with(|c: char| c.is_uppercase()) {
+                        lower.push(e.path());
+                    }
+                }
+            }
+            if has_qml {
+                scan.scan_dir(&dir);
+                for f in lower {
+                    scan.scan_file(&f);
+                }
+            }
+        }
         Ok(scan)
     }
 
@@ -231,6 +258,25 @@ mod tests {
             fs::write(p, c).unwrap();
         }
         dir
+    }
+
+    #[test]
+    fn rewrites_root_imports_of_files_loaded_by_url() {
+        // inir's ShellIiPanels.qml loads modules/ii/ShellIiPanelsImpl.qml by Loader.source, and
+        // only that file imports modules/shared/tilingOverlay, whose `import "root:"` Qt reads as remote.
+        let dir = tree(&[
+            ("shell.qml", "import QtQuick\nLoader { source: \"panels/Impl.qml\" }\n"),
+            ("panels/Impl.qml", "import qs.overlay\nItem { Overlay {} }\n"),
+            ("overlay/Overlay.qml", "import QtQuick\nimport \"root:\"\nimport \"root:services\"\nItem {}\n"),
+            ("tools/picker.qml", "import \"root:services\"\nItem {}\n"),
+            (".git/Hidden.qml", "import \"root:\"\nItem {}\n"),
+        ]);
+        let scan = Scan::new(&dir.join("shell.qml")).unwrap();
+        let root = dir.canonicalize().unwrap();
+        assert_eq!(scan.intercepts[&root.join("overlay/Overlay.qml")], "import QtQuick\nimport \"../\"\nimport \"../services\"\nItem {}\n");
+        assert_eq!(scan.intercepts[&root.join("tools/picker.qml")], "import \"../services\"\nItem {}\n");
+        assert_eq!(scan.intercepts[&root.join("overlay/qmldir")], "module qs.overlay\nOverlay 1.0 Overlay.qml\n");
+        assert!(!scan.intercepts.contains_key(&root.join(".git/Hidden.qml")));
     }
 
     #[test]
