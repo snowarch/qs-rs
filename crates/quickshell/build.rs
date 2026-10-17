@@ -12,7 +12,7 @@ fn main() {
     let builder = CxxQtBuilder::new_qml_module(
         QmlModule::new("Quickshell")
             .version(0, 1)
-            .qml_files(["qml/Scope.qml", "qml/ShellRoot.qml", "qml/Variants.qml", "qml/Singleton.qml", "qml/ShellScreen.qml", "qml/PanelAnchors.qml", "qml/PanelMargins.qml", "qml/ProxyWindowBase.qml", "qml/PanelWindow.qml", "qml/FloatingWindow.qml", "qml/PopupWindow.qml", "qml/PopupAnchor.qml", "qml/SystemClock.qml", "qml/QsMenuHandle.qml", "qml/QsMenuEntry.qml", "qml/QsMenuOpener.qml"])
+            .qml_files(["qml/Scope.qml", "qml/ShellRoot.qml", "qml/Variants.qml", "qml/Singleton.qml", "qml/ShellScreen.qml", "qml/PanelAnchors.qml", "qml/PanelMargins.qml", "qml/ProxyWindowBase.qml", "qml/PanelWindow.qml", "qml/FloatingWindow.qml", "qml/PopupWindow.qml", "qml/SystemClock.qml", "qml/QsMenuHandle.qml", "qml/QsMenuEntry.qml", "qml/QsMenuOpener.qml"])
             .qml_file(QmlFile::from("qml/Quickshell.qml").singleton(true))
             .qml_file(QmlFile::from("qml/QsMenuButtonType.qml").singleton(true)),
     )

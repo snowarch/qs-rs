@@ -17,7 +17,7 @@ ProxyWindowBase {
     onRelativeXChanged: anchor.rect.x = relativeX
     onRelativeYChanged: anchor.rect.y = relativeY
 
-    readonly property QtObject _parent: anchor._proxy === root ? null : anchor._proxy
+    readonly property QtObject _parent: anchor.window === root ? null : anchor.window
     _ready: _parent !== null && _parent._mapped
     screen: _parent ? _parent.screen : null
 
@@ -39,7 +39,6 @@ ProxyWindowBase {
     on_AboutToShow: {
         _window.transientParent = _parent._backingWindow
         _window.flags = grabFocus ? Qt.Popup : Qt.ToolTip
-        anchor.anchoring()
         anchor.updateAnchor()
         _place()
     }

@@ -362,6 +362,208 @@ public:
 	}
 };
 
+// PopupAnchor.rect and .margins: upstream's Box and Margins values, as objects so inir's grouped
+// bindings (`anchor.rect.x: ...`) and writes (`anchor.rect.y = ...`) keep working.
+class QsPopupBox: public QObject {
+	Q_OBJECT;
+	QML_ANONYMOUS;
+	Q_PROPERTY(int x MEMBER x NOTIFY changed);
+	Q_PROPERTY(int y MEMBER y NOTIFY changed);
+	Q_PROPERTY(int width MEMBER width NOTIFY changed);
+	Q_PROPERTY(int height MEMBER height NOTIFY changed);
+
+public:
+	using QObject::QObject;
+	int x = 0, y = 0, width = 0, height = 0;
+	[[nodiscard]] QRect qrect() const { return {x, y, width, height}; }
+
+signals:
+	void changed();
+};
+
+class QsPopupMargins: public QObject {
+	Q_OBJECT;
+	QML_ANONYMOUS;
+	Q_PROPERTY(int left MEMBER left NOTIFY changed);
+	Q_PROPERTY(int right MEMBER right NOTIFY changed);
+	Q_PROPERTY(int top MEMBER top NOTIFY changed);
+	Q_PROPERTY(int bottom MEMBER bottom NOTIFY changed);
+
+public:
+	using QObject::QObject;
+	int left = 0, right = 0, top = 0, bottom = 0;
+	[[nodiscard]] QMargins qmargins() const { return {left, top, right, bottom}; }
+
+signals:
+	void changed();
+};
+
+// Where a PopupWindow attaches, ported from upstream core/popupanchor.cpp: guarded setters, no
+// bindings. With an item set, `window` follows the Quickshell window the item lives in (upstream
+// reads it the same way), so a QML binding never has to chase it.
+class QsPopupAnchor: public QObject {
+	Q_OBJECT;
+	QML_NAMED_ELEMENT(PopupAnchor);
+	Q_PROPERTY(QObject* window READ window WRITE setWindow NOTIFY windowChanged);
+	Q_PROPERTY(QQuickItem* item READ item WRITE setItem NOTIFY itemChanged);
+	Q_PROPERTY(QsPopupBox* rect READ rect CONSTANT);
+	Q_PROPERTY(QsPopupMargins* margins READ margins CONSTANT);
+	Q_PROPERTY(int edges READ edges WRITE setEdges NOTIFY edgesChanged);
+	Q_PROPERTY(int gravity READ gravity WRITE setGravity NOTIFY gravityChanged);
+	Q_PROPERTY(int adjustment READ adjustment WRITE setAdjustment NOTIFY adjustmentChanged);
+	// Anchor rect in the window's content coordinates, what xdg_positioner gets.
+	Q_PROPERTY(QRect _windowRect READ windowRect NOTIFY windowRectChanged);
+
+public:
+	explicit QsPopupAnchor(QObject* parent = nullptr): QObject(parent) {
+		QObject::connect(&mRect, &QsPopupBox::changed, this, &QsPopupAnchor::userRectChanged);
+		QObject::connect(&mMargins, &QsPopupMargins::changed, this, &QsPopupAnchor::userRectChanged);
+	}
+
+	[[nodiscard]] QObject* window() const { return mWindow; }
+	void setWindow(QObject* window) {
+		setItem(nullptr);
+		setWindowInternal(window);
+	}
+
+	[[nodiscard]] QQuickItem* item() const { return mItem; }
+	void setItem(QQuickItem* item) {
+		if (item == mItem) return;
+		if (mItem) QObject::disconnect(mItem, nullptr, this, nullptr);
+		watchBacking(nullptr);
+		mItem = item;
+		if (item) {
+			QObject::connect(item, &QObject::destroyed, this, [this] {
+				mItem = nullptr;
+				watchBacking(nullptr);
+				emit itemChanged();
+				setWindowInternal(nullptr);
+			});
+			QObject::connect(item, &QQuickItem::windowChanged, this, &QsPopupAnchor::onItemWindowChanged);
+		}
+		onItemWindowChanged();
+		emit itemChanged();
+	}
+
+	QsPopupBox* rect() { return &mRect; }
+	QsPopupMargins* margins() { return &mMargins; }
+
+	[[nodiscard]] int edges() const { return mEdges; }
+	void setEdges(int edges) {
+		if (edges == mEdges) return;
+		if (opposing(edges)) {
+			qWarning() << "Cannot set opposing edges for anchor edges. Tried to set" << edges;
+			return;
+		}
+		mEdges = edges;
+		emit edgesChanged();
+	}
+
+	[[nodiscard]] int gravity() const { return mGravity; }
+	void setGravity(int gravity) {
+		if (gravity == mGravity) return;
+		if (opposing(gravity)) {
+			qWarning() << "Cannot set opposing edges for anchor gravity. Tried to set" << gravity;
+			return;
+		}
+		mGravity = gravity;
+		emit gravityChanged();
+	}
+
+	[[nodiscard]] int adjustment() const { return mAdjustment; }
+	void setAdjustment(int adjustment) {
+		if (adjustment == mAdjustment) return;
+		mAdjustment = adjustment;
+		emit adjustmentChanged();
+	}
+
+	[[nodiscard]] QRect windowRect() const { return mWindowRect; }
+
+	// Re-maps an item anchor into its window, then lets the shell adjust (`anchoring`).
+	Q_INVOKABLE void updateAnchor() {
+		auto* content = mWindow ? mWindow->property("contentItem").value<QQuickItem*>() : nullptr;
+		if (mItem && content) {
+			auto user = mRect.qrect();
+			auto base = user.width() == 0 && user.height() == 0 ? mItem->boundingRect() : QRectF(user);
+			setWindowRect(content->mapFromItem(mItem, base.marginsRemoved(mMargins.qmargins())).toRect());
+		}
+		emit anchoring();
+	}
+
+signals:
+	void windowChanged();
+	void itemChanged();
+	void edgesChanged();
+	void gravityChanged();
+	void adjustmentChanged();
+	void windowRectChanged();
+	void anchoring();
+
+protected:
+	// A window registers its Quickshell object ("_qsWindow") when it completes, which can be
+	// after the item entered it: the dynamic property change is the cue to resolve again.
+	bool eventFilter(QObject* watched, QEvent* event) override {
+		if (watched == mBacking && event->type() == QEvent::DynamicPropertyChange
+		    && static_cast<QDynamicPropertyChangeEvent*>(event)->propertyName() == "_qsWindow")
+		{
+			onItemWindowChanged();
+		}
+		return false;
+	}
+
+private:
+	static bool opposing(int e) {
+		return ((e & Qt::TopEdge) && (e & Qt::BottomEdge)) || ((e & Qt::LeftEdge) && (e & Qt::RightEdge));
+	}
+
+	void userRectChanged() { setWindowRect(mRect.qrect().marginsRemoved(mMargins.qmargins())); }
+
+	void setWindowRect(QRect rect) {
+		if (rect.width() <= 0) rect.setWidth(1);
+		if (rect.height() <= 0) rect.setHeight(1);
+		if (rect == mWindowRect) return;
+		mWindowRect = rect;
+		emit windowRectChanged();
+	}
+
+	void watchBacking(QQuickWindow* backing) {
+		if (backing == mBacking) return;
+		if (mBacking) mBacking->removeEventFilter(this);
+		mBacking = backing;
+		if (backing) backing->installEventFilter(this);
+	}
+
+	void onItemWindowChanged() {
+		auto* backing = mItem ? mItem->window() : nullptr;
+		watchBacking(backing);
+		setWindowInternal(backing ? backing->property("_qsWindow").value<QObject*>() : nullptr);
+	}
+
+	void setWindowInternal(QObject* window) {
+		if (window == mWindow) return;
+		QObject::disconnect(mWindowGone);
+		mWindow = window;
+		if (window) {
+			mWindowGone = QObject::connect(window, &QObject::destroyed, this, [this] {
+				mWindow = nullptr;
+				emit windowChanged();
+			});
+		}
+		emit windowChanged();
+	}
+
+	QPointer<QObject> mWindow;
+	QMetaObject::Connection mWindowGone;
+	QPointer<QQuickItem> mItem;
+	QPointer<QQuickWindow> mBacking;
+	QsPopupBox mRect;
+	QsPopupMargins mMargins;
+	int mEdges = Qt::TopEdge | Qt::LeftEdge;
+	int mGravity = Qt::BottomEdge | Qt::RightEdge;
+	int mAdjustment = 3; // PopupAdjustment.Slide
+	QRect mWindowRect {0, 0, 1, 1};
+};
+
 // `QsWindow.window` / `QsWindow.contentItem` from any item: the Quickshell window object that
 // owns the item's QQuickWindow (registered by the window via the "_qsWindow" property).
 class QsWindowAttached: public QObject {

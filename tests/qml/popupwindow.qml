@@ -46,10 +46,18 @@ ShellRoot {
                 && PopupAdjustment.Slide === 3 && PopupAdjustment.All === 63)
             root.check("defaults", !itemPopup.visible && !itemPopup.grabFocus && winPopup.anchor.gravity === (Edges.Bottom | Edges.Right)
                 && winPopup.anchor.edges === (Edges.Top | Edges.Left) && winPopup.anchor.adjustment === PopupAdjustment.Slide)
-            root.check("item window", itemPopup.anchor._proxy === parentWin && itemPopup.anchor.window === null)
+            // Upstream: with an item, `window` reads the Quickshell window the item is in.
+            root.check("item window", itemPopup.anchor.window === parentWin && itemPopup.anchor.item === btn)
             itemPopup.anchor.updateAnchor()
             const r = itemPopup.anchor._windowRect
             root.check("item rect " + r, r.x === 32 && r.y === 35 && r.width === 38 && r.height === 16)
+            // Item gone: no window either; setting a window drops the item (upstream setWindow).
+            itemPopup.anchor.item = null
+            root.check("no item, no window", itemPopup.anchor.window === null)
+            itemPopup.anchor.item = btn
+            itemPopup.anchor.window = parentWin
+            root.check("window drops item", itemPopup.anchor.item === null && itemPopup.anchor.window === parentWin)
+            itemPopup.anchor.item = btn
             root.check("relative", winPopup.anchor.window === parentWin && winPopup.anchor.rect.x === 7 && winPopup.anchor._windowRect.y === 9)
             root.check("hidden popup stays hidden", !itemPopup.backingWindowVisible)
             root.check("shown with parent", parentWin._mapped && winPopup.backingWindowVisible)
