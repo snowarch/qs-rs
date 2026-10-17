@@ -86,6 +86,13 @@ pub fn apply_env(p: &Pragmas) {
                 std::env::set_var("GALLIUM_THREAD", "0");
             }
         }
+        // radeonsi recompiles an optimized variant of each shader on its own threads at every
+        // start, uncached: 1.7 s of CPU and a ~200 MB heap spike opening inir's control panel
+        // (measured with ab.sh; Quickshell does the same). The unoptimized one it would draw
+        // with meanwhile is what we keep. Children get the environment captured before this.
+        if std::env::var_os("AMD_DEBUG").is_none() {
+            std::env::set_var("AMD_DEBUG", "nooptvariant");
+        }
         // Measurement override: QSRS_ENV_OVERRIDE="K=V K2=V2" wins over the shell's pragmas.
         if let Ok(o) = std::env::var("QSRS_ENV_OVERRIDE") {
             for kv in o.split_whitespace() {
