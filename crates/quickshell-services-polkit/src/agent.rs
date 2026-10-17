@@ -83,6 +83,17 @@ const LOGIND: &str = "org.freedesktop.login1";
 /// first PolkitAgent of the process registers.
 static TAKEN: AtomicBool = AtomicBool::new(false);
 
+type Qt = CxxQtThread<qobject::PolkitAgentBase>;
+/// The registration is one per process and outlives a reload: the PolkitAgent of the current
+/// generation (token, thread) gets the requests. None while none is attached.
+static TARGET: std::sync::Mutex<Option<(u64, Qt)>> = std::sync::Mutex::new(None);
+static REGISTERED: AtomicBool = AtomicBool::new(false);
+static SERVING: std::sync::Once = std::sync::Once::new();
+
+fn target() -> Option<Qt> {
+    TARGET.lock().unwrap().as_ref().map(|(_, qt)| qt.clone())
+}
+
 #[derive(Clone)]
 struct Identity {
     id: u32,
@@ -110,7 +121,7 @@ pub struct PolkitAgentRust {
     path: QString,
     is_registered: bool,
     owner: bool,
-    registration: Option<Registration>,
+    token: u64,
     queue: VecDeque<Request>,
     active: Option<Active>,
     generation: u64,
@@ -122,17 +133,15 @@ impl Default for PolkitAgentRust {
             path: QString::default(),
             is_registered: false,
             owner: false,
-            registration: None,
+            token: {
+                static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            },
             queue: VecDeque::new(),
             active: None,
             generation: 0,
         }
     }
-}
-
-/// Dropping it stops serving and unregisters the agent.
-struct Registration {
-    _stop: rt::Sender<()>,
 }
 
 impl Drop for PolkitAgentRust {
@@ -144,8 +153,11 @@ impl Drop for PolkitAgentRust {
         if let Some(active) = self.active.take() {
             active.request.reply.send(Err(reason.into()));
         }
-        self.registration = None;
         if self.owner {
+            let mut target = TARGET.lock().unwrap();
+            if target.as_ref().is_some_and(|(t, _)| *t == self.token) {
+                *target = None;
+            }
             TAKEN.store(false, Ordering::SeqCst);
         }
     }
@@ -168,14 +180,17 @@ impl qobject::PolkitAgentBase {
             return;
         }
         self.as_mut().rust_mut().owner = true;
+        *TARGET.lock().unwrap() = Some((self.token, self.qt_thread()));
+        if REGISTERED.load(Ordering::SeqCst) {
+            self.as_mut().set_registered(true);
+        }
         let path = self.path.to_string();
-        let (stop, stopped) = rt::channel();
-        self.as_mut().rust_mut().registration = Some(Registration { _stop: stop });
-        let qt = self.qt_thread();
-        rt::spawn(async move {
-            if let Err(e) = serve(path.clone(), qt, stopped).await {
-                quickshell::qs_log!(warn, LOG, "failed to register listener on path {path}: {e}");
-            }
+        SERVING.call_once(|| {
+            rt::spawn(async move {
+                if let Err(e) = serve(path.clone()).await {
+                    quickshell::qs_log!(warn, LOG, "failed to register listener on path {path}: {e}");
+                }
+            });
         });
     }
 
@@ -342,9 +357,7 @@ enum PolkitError {
 
 type Subject = (String, HashMap<String, OwnedValue>);
 
-struct Agent {
-    qt: CxxQtThread<qobject::PolkitAgentBase>,
-}
+struct Agent;
 
 #[zbus::interface(name = "org.freedesktop.PolicyKit1.AuthenticationAgent")]
 impl Agent {
@@ -373,7 +386,7 @@ impl Agent {
         }
         let (reply, mut replied) = rt::channel();
         let request = Request { action_id, message, icon_name, cookie, identities: list, reply };
-        if self.qt.queue(move |this| this.incoming(request)).is_err() {
+        if !target().is_some_and(|qt| qt.queue(move |this| this.incoming(request)).is_ok()) {
             return Err(PolkitError::Cancelled("PolkitAgent is being destroyed".into()));
         }
         match replied.recv().await {
@@ -390,7 +403,9 @@ impl Agent {
         cookie: String,
     ) -> Result<(), PolkitError> {
         check_caller(conn, &hdr).await?;
-        let _ = self.qt.queue(move |this| this.cancel_from_agent(cookie));
+        if let Some(qt) = target() {
+            let _ = qt.queue(move |this| this.cancel_from_agent(cookie));
+        }
         Ok(())
     }
 }
@@ -479,18 +494,18 @@ async fn register(conn: &zbus::Connection, path: &str) -> zbus::Result<Subject> 
     Ok(subject)
 }
 
-/// Serves the agent until the QML object goes away, registering again whenever polkitd restarts.
-async fn serve(path: String, qt: CxxQtThread<qobject::PolkitAgentBase>, mut stop: rt::Receiver<()>) -> zbus::Result<()> {
-    use std::future::Future;
-    use std::task::Poll;
-    use zbus::export::futures_core::Stream;
+/// Serves the agent for the life of the process (generations attach to it), registering again
+/// whenever polkitd restarts.
+async fn serve(path: String) -> zbus::Result<()> {
     let conn = rt::system().await?;
-    conn.object_server().at(path.as_str(), Agent { qt: qt.clone() }).await?;
+    conn.object_server().at(path.as_str(), Agent).await?;
     let mut owners = qs_dbus::name_owner_changes(&conn, POLKITD).await?;
     let set = |ok: bool| {
-        let _ = qt.queue(move |this| this.set_registered(ok));
+        REGISTERED.store(ok, Ordering::SeqCst);
+        if let Some(qt) = target() {
+            let _ = qt.queue(move |this| this.set_registered(ok));
+        }
     };
-    let mut stopped = std::pin::pin!(stop.recv());
     let mut subject = match register(&conn, &path).await {
         Ok(s) => {
             set(true);
@@ -501,14 +516,8 @@ async fn serve(path: String, qt: CxxQtThread<qobject::PolkitAgentBase>, mut stop
             None
         }
     };
-    loop {
-        let change = std::future::poll_fn(|cx| {
-            if stopped.as_mut().poll(cx).is_ready() {
-                return Poll::Ready(None);
-            }
-            Pin::new(&mut owners).poll_next(cx).map(Some)
-        });
-        let Some(Some(Ok(msg))) = change.await else { break };
+    while let Some(msg) = rt::next(&mut owners).await {
+        let Ok(msg) = msg else { continue };
         let Some((_, _, new_owner)) = qs_dbus::owner_change(&msg) else { continue };
         set(false);
         subject = None;
