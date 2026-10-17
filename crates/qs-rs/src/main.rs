@@ -409,8 +409,11 @@ fn run_shell(cli: &cli::Cli, config: PathBuf, started: std::time::Instant) -> i3
         let _ = std::fs::remove_dir_all(&vfs_root);
         return code;
     }
+    quickshell::common::set_reload_hook(host::ffi::request_reload);
     let root = unsafe { host::ffi::create_root(std::pin::Pin::new_unchecked(&mut *engine), &qstr(&entry)) };
     if !root.is_null() {
+        let _ = host::SHELL.set((root_file.clone(), vfs.clone()));
+        unsafe { host::ffi::install_reload(engine, root, &qstr(&vfs_root), &qstr(&entry)) };
         quickshell::log::emit(quickshell::log::Level::Info, "default", "Configuration Loaded".into());
         let (alloc, resident) = malloc_stats().unwrap_or_default();
         quickshell::qs_log!(

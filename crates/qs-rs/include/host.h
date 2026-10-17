@@ -300,4 +300,93 @@ inline QObject* create_root(QQmlEngine& engine, const QString& path) {
 	finish_load(engine, root);
 	return root;
 }
+rust::String rescan_vfs() noexcept;
+
+// Hot reload, upstream RootWrapper::reloadGraph: re-scan into the VFS, compile the shell in a new
+// engine (new generation: fresh singletons), and only when it compiles replace the running one;
+// otherwise the old shell keeps running and gets reloadFailed. The old root goes first, so the
+// services it owns release their D-Bus names and paths before the new ones claim them.
+class QsShell: public QObject {
+public:
+	QsShell(QQmlEngine* engine, QObject* root, QString importPath, QString entry)
+	    : engine(engine), root(root), importPath(std::move(importPath)), entry(std::move(entry)) {}
+
+	void reload(bool hard) {
+		Q_UNUSED(hard); // every reload is a new generation; windows are not carried over yet
+		if (this->reloading) return;
+		this->reloading = true;
+		this->doReload();
+		this->reloading = false;
+	}
+
+	static QsShell* instance;
+
+private:
+	static QObject* quickshell(QQmlEngine* engine) {
+		return engine == nullptr ? nullptr : engine->singletonInstance<QObject*>("Quickshell", "Quickshell");
+	}
+
+	void failed(const QString& error) {
+		qCritical().noquote() << error;
+		if (auto* qs = quickshell(this->engine)) QMetaObject::invokeMethod(qs, "reloadFailed", Q_ARG(QString, error));
+	}
+
+	void doReload() {
+		auto scanError = rescan_vfs();
+		if (!scanError.empty()) {
+			this->failed("Failed to load configuration\n  " + QString::fromStdString(std::string(scanError)));
+			return;
+		}
+		qInfo() << "Reloading configuration...";
+		auto* next = new_engine(this->importPath);
+		auto* component = new QQmlComponent(next, QUrl::fromLocalFile(this->entry), QQmlComponent::PreferSynchronous);
+		if (component->isError()) {
+			QString error = "Failed to load configuration";
+			for (auto& e: component->errors()) error += "\n  caused by " + e.toString();
+			delete component;
+			delete next;
+			this->failed(error);
+			return;
+		}
+
+		// The old generation: root first (its children may still reach the engine), then the engine.
+		delete this->root;
+		this->root = nullptr;
+		QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+		this->engine->collectGarbage();
+		delete this->engine;
+		this->engine = next;
+
+		auto* root = component->create();
+		delete component;
+		if (root == nullptr) {
+			qCritical() << "Failed to create the reloaded configuration";
+			return;
+		}
+		QQmlEngine::setObjectOwnership(root, QQmlEngine::CppOwnership);
+		this->root = root;
+		finish_load(*next, root);
+		qInfo() << "Configuration Loaded";
+		if (auto* qs = quickshell(next)) QMetaObject::invokeMethod(qs, "reloadCompleted");
+	}
+
+	QQmlEngine* engine;
+	QObject* root;
+	QString importPath;
+	QString entry;
+	bool reloading = false;
+};
+inline QsShell* QsShell::instance = nullptr;
+
+inline void install_reload(QQmlEngine* engine, QObject* root, const QString& importPath, const QString& entry) {
+	QsShell::instance = new QsShell(engine, root, importPath, entry);
+}
+
+// Quickshell.reload() runs inside the old generation's JS (or while its root is still being
+// created): reload from the event loop once that has returned.
+inline void request_reload(bool hard) {
+	QMetaObject::invokeMethod(QCoreApplication::instance(), [hard]() {
+		if (QsShell::instance != nullptr) QsShell::instance->reload(hard);
+	}, Qt::QueuedConnection);
+}
 } // namespace qsrs

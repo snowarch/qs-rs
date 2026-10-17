@@ -26,5 +26,24 @@ pub mod ffi {
         fn new_engine(import_path: &QString) -> *mut QQmlEngine;
         fn check_file(engine: Pin<&mut QQmlEngine>, path: &QString) -> String;
         unsafe fn create_root(engine: Pin<&mut QQmlEngine>, path: &QString) -> *mut QObject;
+        unsafe fn install_reload(engine: *mut QQmlEngine, root: *mut QObject, import_path: &QString, entry: &QString);
+        fn request_reload(hard: bool);
+    }
+
+    extern "Rust" {
+        fn rescan_vfs() -> String;
+    }
+}
+
+/// What a reload scans again: the shell's root file and the VFS it mirrors into.
+pub static SHELL: std::sync::OnceLock<(std::path::PathBuf, std::path::PathBuf)> = std::sync::OnceLock::new();
+
+/// Called by the host on reload (upstream reloadGraph's scan): re-scans the shell and rewrites the
+/// VFS. Returns the error, empty when the new tree is in place.
+fn rescan_vfs() -> String {
+    let Some((root_file, vfs)) = SHELL.get() else { return "no shell to reload".into() };
+    match crate::scan::Scan::new(root_file).and_then(|scan| scan.write_vfs(vfs)) {
+        Ok(()) => String::new(),
+        Err(e) => format!("scan of {} failed: {e}", root_file.display()),
     }
 }
