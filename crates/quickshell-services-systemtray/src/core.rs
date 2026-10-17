@@ -2,6 +2,9 @@
 //! whenever another watcher leaves, like upstream); another one is the host: it registers with
 //! whichever watcher owns the name, reads every item with GetAll and re-reads it on the item's
 //! New* signals. Items are keyed by the watcher's "service/path" string.
+//! Watcher and host run once per process, like upstream's StatusNotifierWatcher::instance(): each
+//! shell generation attaches to the host and gets the current items, so a reload neither
+//! re-claims the watcher name nor loses the tray.
 
 #[cxx_qt::bridge]
 pub mod qobject {
@@ -59,11 +62,44 @@ type Qt = CxxQtThread<qobject::SystemTrayCore>;
 
 pub struct SystemTrayCoreRust {
     worker: Worker,
+    token: u64,
 }
 
 impl Default for SystemTrayCoreRust {
     fn default() -> Self {
-        Self { worker: Worker::new(Bus::Session, "SystemTray") }
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self { worker: Worker::new(Bus::Session, "SystemTray"), token: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) }
+    }
+}
+
+impl Drop for SystemTrayCoreRust {
+    fn drop(&mut self) {
+        let mut target = tray().target.lock().unwrap();
+        if target.as_ref().is_some_and(|(t, _)| *t == self.token) {
+            *target = None;
+        }
+    }
+}
+
+/// The generation tray items go to: its core's token and thread. None while none is attached.
+type Target = Arc<Mutex<Option<(u64, Qt)>>>;
+
+struct Tray {
+    target: Target,
+    items: Arc<Mutex<HashMap<String, Item>>>,
+    started: std::sync::Once,
+}
+
+fn tray() -> &'static Tray {
+    static TRAY: std::sync::OnceLock<Tray> = std::sync::OnceLock::new();
+    TRAY.get_or_init(|| Tray { target: Arc::default(), items: Arc::default(), started: std::sync::Once::new() })
+}
+
+/// Queues `f` on the attached generation; false when there is none.
+fn queue(target: &Target, f: impl FnOnce(Pin<&mut qobject::SystemTrayCore>) + Send + 'static) -> bool {
+    match target.lock().unwrap().as_ref() {
+        Some((_, qt)) => qt.queue(f).is_ok(),
+        None => false,
     }
 }
 
@@ -212,12 +248,14 @@ struct Item {
     /// reuses its file.
     n: u64,
     files: Vec<PathBuf>,
+    /// The last properties sent, replayed to the next generation on reload.
+    json: String,
 }
 
 #[derive(Clone)]
 struct Host {
     conn: Connection,
-    qt: Qt,
+    target: Target,
     items: Arc<Mutex<HashMap<String, Item>>>,
     image_dir: PathBuf,
     seq: Arc<Mutex<u64>>,
@@ -265,17 +303,20 @@ impl Host {
             *s += 1;
             *s
         };
-        self.items.lock().unwrap().insert(key.clone(), Item { service, path, owner, n, files: Vec::new() });
+        self.items.lock().unwrap().insert(key.clone(), Item { service, path, owner, n, files: Vec::new(), json: String::new() });
         self.refresh(key);
     }
 
     fn remove(&self, key: &str) {
         if let Some(item) = self.items.lock().unwrap().remove(key) {
             let key = key.to_string();
-            let _ = self.qt.queue(move |this| {
+            let files = item.files.clone();
+            if !queue(&self.target, move |this| {
                 this.item_removed(QString::from(&key));
                 item.files.iter().for_each(|f| drop(std::fs::remove_file(f)));
-            });
+            }) {
+                files.iter().for_each(|f| drop(std::fs::remove_file(f)));
+            }
         }
     }
 
@@ -355,11 +396,14 @@ impl Host {
 
         // Replaced icon files are removed only after QML moved to the new ones.
         let stale: Vec<PathBuf> = match self.items.lock().unwrap().get_mut(key) {
-            Some(item) => std::mem::replace(&mut item.files, files.clone()).into_iter().filter(|f| !files.contains(f)).collect(),
+            Some(item) => {
+                item.json = json.clone();
+                std::mem::replace(&mut item.files, files.clone()).into_iter().filter(|f| !files.contains(f)).collect()
+            }
             None => return,
         };
         let key = key.to_string();
-        let _ = self.qt.queue(move |this| {
+        queue(&self.target, move |this| {
             this.item_changed(QString::from(&key), QString::from(&json));
             stale.iter().for_each(|f| drop(std::fs::remove_file(f)));
         });
@@ -375,12 +419,12 @@ async fn stream(conn: &Connection, iface: &str) -> zbus::Result<zbus::MessageStr
     qs_dbus::signals(conn, MatchRule::builder().msg_type(Type::Signal).interface(iface.to_string())?.build()).await
 }
 
-async fn run_host(qt: Qt) -> zbus::Result<()> {
+async fn run_host(target: Target, items: Arc<Mutex<HashMap<String, Item>>>) -> zbus::Result<()> {
     let conn = Bus::Session.connect().await?;
     let launch = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
     let host_id = format!("org.kde.StatusNotifierHost-{}-{launch}", std::process::id());
     conn.request_name(host_id.as_str()).await?;
-    let host = Host { conn: conn.clone(), qt, items: Default::default(), image_dir: image_dir("tray"), seq: Default::default() };
+    let host = Host { conn: conn.clone(), target, items, image_dir: image_dir("tray"), seq: Default::default() };
 
     let mut watcher_signals = stream(&conn, WATCHER).await?;
     let mut item_signals = stream(&conn, ITEM).await?;
@@ -427,15 +471,31 @@ async fn run_host(qt: Qt) -> zbus::Result<()> {
 
 impl cxx_qt::Initialize for qobject::SystemTrayCore {
     fn initialize(self: Pin<&mut Self>) {
+        let t = tray();
         let qt = self.qt_thread();
-        spawn(async {
-            if let Err(e) = run_watcher().await {
-                quickshell::qs_log!(warn, "quickshell.service.sni", "watcher: {e}");
-            }
-        });
-        spawn(async move {
-            if let Err(e) = run_host(qt).await {
-                quickshell::qs_log!(warn, "quickshell.service.sni", "host: {e}");
+        *t.target.lock().unwrap() = Some((self.token, qt.clone()));
+        let mut first = false;
+        t.started.call_once(|| first = true);
+        if first {
+            spawn(async {
+                if let Err(e) = run_watcher().await {
+                    quickshell::qs_log!(warn, "quickshell.service.sni", "watcher: {e}");
+                }
+            });
+            let (target, items) = (t.target.clone(), t.items.clone());
+            spawn(async move {
+                if let Err(e) = run_host(target, items).await {
+                    quickshell::qs_log!(warn, "quickshell.service.sni", "host: {e}");
+                }
+            });
+            return;
+        }
+        // A reload: the items the host already knows go to this generation.
+        let mut carried: Vec<(String, String)> = t.items.lock().unwrap().iter().filter(|(_, i)| !i.json.is_empty()).map(|(k, i)| (k.clone(), i.json.clone())).collect();
+        carried.sort();
+        let _ = qt.queue(move |mut this| {
+            for (key, json) in carried {
+                this.as_mut().item_changed(QString::from(&key), QString::from(&json));
             }
         });
     }
