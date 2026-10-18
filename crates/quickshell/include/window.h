@@ -385,6 +385,11 @@ public:
 		if (screen && window->screen() != screen) window->setScreen(screen);
 	}
 
+	Q_INVOKABLE QString windowScreenName(QWindow* window) {
+		auto* screen = window ? window->screen() : nullptr;
+		return screen ? screen->name() : QString();
+	}
+
 	Q_INVOKABLE void registerProxy(QQuickWindow* window, QObject* proxy) {
 		if (!window) return;
 		window->setProperty("_qsWindow", QVariant::fromValue(proxy));
@@ -656,7 +661,13 @@ class QsWindowAttached: public QObject {
 public:
 	explicit QsWindowAttached(QObject* parent): QObject(parent) {
 		if (auto* item = qobject_cast<QQuickItem*>(parent)) {
-			QObject::connect(item, &QQuickItem::windowChanged, this, &QsWindowAttached::windowChanged);
+			QObject::connect(item, &QQuickItem::windowChanged, this, [this](QQuickWindow* backing) {
+				this->watchBacking(backing);
+				emit this->windowChanged();
+			});
+			this->watchBacking(item->window());
+		} else {
+			this->watchBacking(qobject_cast<QQuickWindow*>(parent));
 		}
 	}
 
@@ -676,4 +687,26 @@ public:
 
 signals:
 	void windowChanged();
+
+protected:
+	// Content enters its QQuickWindow before the window registers (or, on reuse, swaps) its
+	// Quickshell object: bindings read during creation would keep null without this cue.
+	bool eventFilter(QObject* watched, QEvent* event) override {
+		if (watched == mBacking && event->type() == QEvent::DynamicPropertyChange
+		    && static_cast<QDynamicPropertyChangeEvent*>(event)->propertyName() == "_qsWindow")
+		{
+			emit windowChanged();
+		}
+		return false;
+	}
+
+private:
+	void watchBacking(QQuickWindow* backing) {
+		if (backing == mBacking) return;
+		if (mBacking) mBacking->removeEventFilter(this);
+		mBacking = backing;
+		if (backing) backing->installEventFilter(this);
+	}
+
+	QPointer<QQuickWindow> mBacking;
 };

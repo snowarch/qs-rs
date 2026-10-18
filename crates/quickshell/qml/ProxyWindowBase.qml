@@ -15,7 +15,15 @@ QtObject {
     property int width: _window ? _window.width : implicitWidth
     property int height: _window ? _window.height : implicitHeight
     readonly property real devicePixelRatio: _window ? _window.devicePixelRatio : 1
-    property QtObject screen: null
+    // Upstream reads the screen the window is on when none was set (the primary one before the
+    // window exists), never null.
+    property QtObject screen: _currentScreen
+    property string _windowScreen: ""
+    readonly property QtObject _currentScreen: {
+        const all = Quickshell.screens
+        for (let i = 0; i < all.length; i++) if (all[i].name === _windowScreen) return all[i]
+        return all.length ? all[0] : null
+    }
     property color color: "white"
     property Region mask: null
     readonly property QtObject windowTransform: null
@@ -74,6 +82,7 @@ QtObject {
     property Connections _windowEvents: Connections {
         target: root._window
         function onFrameSwapped() { if (!root._mapped) root._mapped = true }
+        function onScreenChanged() { root._windowScreen = QsWindowSupport.windowScreenName(root._window) }
         // Closed from outside: like upstream, `visible` turns false before `closed`.
         function onVisibleChanged() {
             if (root._window.visible) return
@@ -124,6 +133,7 @@ QtObject {
         // Also resets a window taken over from a declaration that had it off.
         QsWindowSupport.setUpdatesEnabled(_window, updatesEnabled)
         _applyScreen()
+        _windowScreen = QsWindowSupport.windowScreenName(_window)
         _completed = true
         _applyMask()
         _syncVisible()
