@@ -23,14 +23,21 @@ sampled 20 s after start and after a minute idle (mean of the warm runs, 2026-10
 
 | | Quickshell 0.3.2 | qs-rs | |
 |---|---:|---:|---:|
-| load time | 3986 ms | **632 ms** | 6.3x faster |
-| CPU spent starting | 7.4 s | **3.8 s** | -49% |
+| load time | 4111 ms | **657 ms** | 6.3x faster |
+| load time, first start after an update | 4252 ms | **1943 ms** | 2.2x faster |
+| CPU spent starting | 7.5 s | **2.8 s** | -62% |
 | CPU over 60 s idle | 785 ms | **665 ms** | -15% |
-| threads | 88 | **38** | -57% |
-| RSS | 566 MB | **478 MB** | -16% |
-| PSS | 427 MB | **353 MB** | -17% |
-| heap (anon) | 380 MB | **285 MB** | -25% |
-| VRAM | 164 MiB | **147 MiB** | -10% |
+| threads | 89 | **40** | -55% |
+| RSS | 568 MB | **479 MB** | -16% |
+| peak RSS | 597 MB | **509 MB** | -15% |
+| PSS | 445 MB | **369 MB** | -17% |
+| heap (anon) | 381 MB | **288 MB** | -24% |
+| VRAM | 163 MiB | **146 MiB** | -10% |
+
+Quickshell never keeps a QML cache for a shell, so every start compiles it; qs-rs recompiles only
+when an update changes a type the shell uses. Opening inir's control panel peaks at 806 MB on
+Quickshell and 513 MB on qs-rs (Mesa's optimized shader variants, compiled at every start, are
+skipped). Reloading keeps the shown windows instead of recreating them.
 
 Same pixels on screen: 191 surfaces of inir's three families shot on both. Ryzen 5000 APU (Vega), Linux 7.2,
 Qt 6.12, Mesa 26.2. A single benchmark is never the whole truth, but this one is pretty loud.
