@@ -55,7 +55,7 @@ QtObject {
 
     onUpdatesEnabledChanged: if (_window) QsWindowSupport.setUpdatesEnabled(_window, updatesEnabled)
     function _applyMask() { if (_window) QsWindowSupport.applyMask(_window, root.mask) }
-    onMaskChanged: _applyMask()
+    onMaskChanged: if (_window) _applyMask()
 
     property Connections _maskWatcher: Connections {
         target: root.mask
@@ -85,7 +85,7 @@ QtObject {
     function _applyScreen() {
         QsWindowSupport.setWindowScreen(_window, root.screen ? root.screen._info : Qt.application.screens[0])
     }
-    onScreenChanged: _applyScreen()
+    onScreenChanged: if (_window) _applyScreen()
     property Connections _windowEvents: Connections {
         target: root._window
         function onFrameSwapped() { if (!root._mapped) root._mapped = true }
@@ -133,8 +133,12 @@ QtObject {
         onTriggered: if (root._window) { QsWindowSupport.thawWindow(root._window); root._syncVisible() }
     }
     property bool _completed: false
-    onVisibleChanged: _syncVisible()
-    on_ReadyChanged: _syncVisible()
+    // Handlers that fire while the proxy is created check `_window` (set in onCompleted) before
+    // calling a function: Qt 6.12 flushes a pending binding by the looked-up member's index, so a
+    // method lookup then evaluates an unrelated property early (qv4qobjectwrapper.cpp getProperty),
+    // and it loops once its inputs' own bindings settle.
+    onVisibleChanged: if (_window) _syncVisible()
+    on_ReadyChanged: if (_window) _syncVisible()
     Component.onCompleted: {
         _window = QsWindowSupport.acquireWindow(root, _content, _reuseTag, root.screen ? root.screen.name : "")
         // Also resets a window taken over from a declaration that had it off.

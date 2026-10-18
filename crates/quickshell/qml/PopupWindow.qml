@@ -22,7 +22,7 @@ ProxyWindowBase {
     screen: _parent ? _parent.screen : null
 
     readonly property var _placement: [anchor._windowRect, anchor.edges, anchor.gravity, anchor.adjustment]
-    on_PlacementChanged: { _place(); _reposition() }
+    on_PlacementChanged: if (_window) { _place(); _reposition() }
     function _place() {
         const p = _placement
         QsWindowSupport.setPopupAnchor(_window, p[0], p[1], p[2], p[3])

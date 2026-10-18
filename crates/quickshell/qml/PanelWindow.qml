@@ -51,7 +51,7 @@ ProxyWindowBase {
     readonly property int _anchorBits: (anchors.top ? 1 : 0) | (anchors.bottom ? 2 : 0) | (anchors.left ? 4 : 0) | (anchors.right ? 8 : 0)
     // Any input change reconfigures the surface; LayerShellQt applies live what the protocol allows.
     readonly property var _config: [_anchorBits, _layer, _keyboardFocus, _exclusiveZone, margins.left, margins.top, margins.right, margins.bottom, _namespace]
-    on_ConfigChanged: _configure()
+    on_ConfigChanged: if (_window) _configure()
     function _configure() {
         const c = _config
         QsLayerShell.configure(_window, c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8])
@@ -69,7 +69,7 @@ ProxyWindowBase {
         _hide()
         _syncVisible()
     }
-    on_LayerChanged: _recreate()
-    on_NamespaceChanged: _recreate()
-    onScreenChanged: _recreate()
+    on_LayerChanged: if (_window) _recreate()
+    on_NamespaceChanged: if (_window) _recreate()
+    onScreenChanged: if (_window) _recreate()
 }
