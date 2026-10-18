@@ -425,6 +425,30 @@ pub fn log(cli: &Cli, file: Option<&str>, tail: usize, follow: bool, rules: &str
     quickshell::log::read_file(&path, tail, follow, rules, color, cli.log_times)
 }
 
+/// `qs errors`: the running instance's warnings and errors, grouped (see errors.rs).
+pub fn errors(cli: &Cli, follow: bool, static_check: bool) -> i32 {
+    let info = match select_instance(cli, true, true) {
+        Ok((info, _)) => info,
+        Err(()) => return 255,
+    };
+    let log = instance::base_run_dir().join("by-id").join(&info.instance_id).join("log.qslog");
+    let config = PathBuf::from(&info.config_path);
+    let shell_dir = config.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
+    let static_lines = static_check.then(|| {
+        let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("qs"));
+        let out = std::process::Command::new(exe)
+            .args(["check", "-p", &info.config_path])
+            .env("QT_QPA_PLATFORM", "offscreen")
+            .env("NO_COLOR", "1")
+            .output();
+        let text = out.map(|o| format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))).unwrap_or_default();
+        let summary = text.lines().find(|l| l.contains("files checked")).unwrap_or("check did not finish").to_string();
+        (text.lines().filter_map(crate::errors::static_line).collect(), summary)
+    });
+    let color = !cli.no_color && std::env::var("NO_COLOR").map_or(true, |v| v.is_empty());
+    crate::errors::run(&log, &shell_dir, follow, static_lines, color)
+}
+
 fn gpu_info() -> String {
     let mut out = String::new();
     let mut nodes: Vec<PathBuf> = std::fs::read_dir("/sys/class/drm")

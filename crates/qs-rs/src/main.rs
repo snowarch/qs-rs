@@ -17,6 +17,7 @@ extern crate quickshell_widgets;
 mod cachesync;
 mod cli;
 mod command;
+mod errors;
 mod host;
 mod launch;
 mod scan;
@@ -271,6 +272,7 @@ fn main() {
     let code = match &cli.cmd {
         _ if cli.version => command::print_version(cli.verbosity),
         cli::Command::Log { file, tail, follow, rules } => command::log(&cli, file.as_deref(), *tail, *follow, rules),
+        cli::Command::Errors { follow, static_check } => command::errors(&cli, *follow, *static_check),
         cli::Command::List => command::list(&cli),
         cli::Command::Kill => command::kill(&cli),
         cli::Command::Ipc(ipc) => command::ipc(&cli, ipc),

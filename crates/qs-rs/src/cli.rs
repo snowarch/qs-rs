@@ -34,6 +34,8 @@ pub enum Command {
     Launch,
     /// qs-rs only: compile every QML file of the shell and report errors.
     Check,
+    /// qs-rs only: every warning and error of the running instance, grouped, plus `--static`.
+    Errors { follow: bool, static_check: bool },
     Log { file: Option<String>, tail: usize, follow: bool, rules: String },
     List,
     Kill,
@@ -67,6 +69,7 @@ const ARG_MISMATCH: i32 = 112;
 enum Level {
     Root,
     Check,
+    Errors,
     Log,
     List,
     Kill,
@@ -85,7 +88,7 @@ impl Level {
         use Level::*;
         match self {
             Root => None,
-            Check | Log | List | Kill | Ipc | Msg => Some(Root),
+            Check | Errors | Log | List | Kill | Ipc | Msg => Some(Root),
             IpcShow | IpcCall | IpcWait | IpcListen | Prop => Some(Ipc),
             PropGet => Some(Prop),
         }
@@ -96,6 +99,7 @@ impl Level {
         match self {
             Root => "qs",
             Check => "check",
+            Errors => "errors",
             Log => "log",
             List => "list",
             Kill => "kill",
@@ -114,6 +118,7 @@ impl Level {
         use Level::*;
         Some(match (self, word) {
             (Root, "check") => Check,
+            (Root, "errors") => Errors,
             (Root, "log") => Log,
             (Root, "list") => List,
             (Root, "kill") => Kill,
@@ -135,11 +140,11 @@ impl Level {
     }
 
     fn instance_selection(self) -> bool {
-        matches!(self, Level::Log | Level::Kill | Level::Ipc | Level::Msg)
+        matches!(self, Level::Log | Level::Errors | Level::Kill | Level::Ipc | Level::Msg)
     }
 
     fn logging(self) -> bool {
-        matches!(self, Level::Root | Level::Check | Level::Log | Level::List | Level::Kill | Level::Ipc | Level::Msg)
+        matches!(self, Level::Root | Level::Check | Level::Errors | Level::Log | Level::List | Level::Kill | Level::Ipc | Level::Msg)
     }
 
     fn config_selection(self) -> bool {
@@ -168,6 +173,7 @@ struct Parser {
     log_tail: usize,
     log_follow: bool,
     log_rules: String,
+    static_check: bool,
 }
 
 fn err(code: i32, text: impl Into<String>) -> Exit {
@@ -242,7 +248,8 @@ impl Parser {
                     Err(_) => return Err(err(CONVERSION, format!("The value {v} is not an allowed value for {name}"))),
                 };
             }
-            "-f" | "--follow" if level == Level::Log => self.log_follow = true,
+            "-f" | "--follow" if level == Level::Log || level == Level::Errors => self.log_follow = true,
+            "--static" if level == Level::Errors => self.static_check = true,
             "-r" | "--rules" if level == Level::Log => self.log_rules = need(name)?,
             "-s" | "--show" if level == Level::Msg => self.msg_show = true,
             _ => return Ok(false),
@@ -330,6 +337,7 @@ impl Parser {
         self.cli.cmd = match self.level {
             Level::Root => Command::Launch,
             Level::Check => Command::Check,
+            Level::Errors => Command::Errors { follow: self.log_follow, static_check: self.static_check },
             Level::Log => Command::Log {
                 file: Some(next()).filter(|f| !f.is_empty()),
                 tail: self.log_tail,
@@ -369,6 +377,7 @@ pub fn parse(args: impl IntoIterator<Item = String>) -> Result<Cli, Exit> {
         log_tail: 0,
         log_follow: false,
         log_rules: String::new(),
+        static_check: false,
     };
     let mut it = args.into_iter().peekable();
     while let Some(tok) = it.next() {
@@ -441,6 +450,7 @@ fn help(level: Level) -> String {
              kill                    Kill quickshell instances.\n  \
              ipc                     Communicate with other Quickshell instances.\n  \
              check                   Compile every QML file of the config and report errors (qs-rs).\n  \
+             errors                  Warnings and errors of a running instance, grouped (qs-rs).\n  \
              msg                     [DEPRECATED] Moved to `ipc call`.\n"
         ),
         Level::Log => format!(
@@ -468,6 +478,14 @@ fn help(level: Level) -> String {
         ),
         Level::Msg => format!("qs msg [OPTIONS] TARGET FUNCTION [ARGS...]\n\n  -s, --show              Print information about a function or target.\n\n{INSTANCE}\n{CONFIG}{FILTER}"),
         Level::Check => format!("qs check [OPTIONS]\n\n{CONFIG}"),
+        Level::Errors => format!(
+            "qs errors [OPTIONS]\n\n  \
+             Every warning and error the instance logged since it started, grouped by kind with\n  \
+             counts and the side that owns it (the shell by area, the runtime, the system).\n\n  \
+             -f, --follow            Keep reading and print each new kind as it first shows up.\n      \
+             --static            Also compile every QML file of the config (all families, nothing shown).\n\n\
+             {INSTANCE}\n{CONFIG}{FILTER}"
+        ),
     };
     body
 }
@@ -518,6 +536,9 @@ mod tests {
         assert_eq!(p("-vv").unwrap().verbosity, 2);
         let c = p("-ndp /a").unwrap();
         assert!(c.no_duplicate && c.daemonize && c.path.as_deref() == Some("/a"));
+        assert_eq!(p("errors --static -f").unwrap().cmd, Command::Errors { follow: true, static_check: true });
+        assert_eq!(p("errors").unwrap().cmd, Command::Errors { follow: false, static_check: false });
+        assert!(p("check --static").is_err());
         assert_eq!(p("log -t 5 -f").unwrap().cmd, Command::Log { file: None, tail: 5, follow: true, rules: String::new() });
     }
 

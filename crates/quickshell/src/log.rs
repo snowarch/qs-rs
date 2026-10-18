@@ -663,6 +663,28 @@ pub fn read_file(path: &PathBuf, tail: usize, follow: bool, rules: &str, color: 
     }
 }
 
+/// Every message of a log file, in order, to `each`; with `follow`, keeps reading until the
+/// writing process lets go of the file. `Err` is the text to print when the file can't be read.
+pub fn each_message(path: &Path, follow: bool, mut each: impl FnMut(&Message)) -> Result<(), String> {
+    let mut file = File::open(path).map_err(|e| format!("Failed to open log file {}: {e}", path.display()))?;
+    let mut data = Vec::new();
+    let _ = file.read_to_end(&mut data);
+    let mut pos = Decoder::header(&data).map_err(|v| format!("This log was encoded with version {v} of the log encoder, which this build cannot decode ({LOG_VERSION})."))?;
+    let mut decoder = Decoder::default();
+    loop {
+        let alive = follow && !lock(&file, libc::F_RDLCK as i16, false);
+        while let Some((m, _, next)) = decoder.next(&data, pos) {
+            pos = next;
+            each(&m);
+        }
+        if !alive {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let _ = file.read_to_end(&mut data);
+    }
+}
+
 /// Logs through the instance logger: `qs_log!(warn, "quickshell.service.mpris", "...", args)`.
 #[macro_export]
 macro_rules! qs_log {
