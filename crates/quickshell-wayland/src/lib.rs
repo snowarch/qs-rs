@@ -3,6 +3,7 @@
 extern crate cxx_qt_lib;
 extern crate quickshell;
 pub mod idle;
+pub mod screencopy;
 pub mod toplevel;
 
 #[cfg(test)]

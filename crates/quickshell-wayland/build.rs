@@ -64,7 +64,8 @@ fn main() {
         .cpp_file("include/layershell.h")
         .cpp_file("include/sessionlock.h")
         .cpp_file("include/backgroundeffect.h")
-        .files(["src/idle.rs", "src/toplevel.rs"])
+        .cpp_file("include/screencopy.h")
+        .files(["src/idle.rs", "src/toplevel.rs", "src/screencopy.rs"])
         .build()
         .export();
 }

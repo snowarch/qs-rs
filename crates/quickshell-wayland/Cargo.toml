@@ -9,6 +9,7 @@ links = "quickshell_wayland"
 cxx.workspace = true
 cxx-qt.workspace = true
 cxx-qt-lib.workspace = true
+libc = "0.2"
 quickshell = { path = "../quickshell" }
 qs_wayland = { path = "../qs-wayland" }
 
