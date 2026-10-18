@@ -20,6 +20,7 @@ pub mod ffi {
         fn qt_plugins_path() -> String;
         fn set_plugin_path(path: &QString);
         fn setup_icons(theme: &QString);
+        fn init_webengine() -> bool;
         fn create_app(use_qapplication: bool, desktop_settings_aware: bool) -> UniquePtr<QGuiApplication>;
         fn configure_app(app_id: &QString, native_text_rendering: bool);
         fn exec_app(app: Pin<&mut QGuiApplication>) -> i32;

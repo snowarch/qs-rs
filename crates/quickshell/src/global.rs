@@ -89,6 +89,10 @@ use std::path::Path;
 
 /// The Quickshell release whose QML API this host implements.
 pub const COMPAT_VERSION: (i32, i32) = (0, 3);
+/// Upstream's "unreleased features" list, here what qs-rs runs that Quickshell does not:
+/// `Quickshell.hasVersion(0, 3, ["webengine"])` holds only on qs-rs. Quickshell hands Qt no argv,
+/// and Chromium needs argv[0] (inir's patched build sets it); qs-rs passes one.
+pub const FEATURES: &[&str] = &["webengine"];
 
 pub struct QuickshellGlobalRust {
     watch_files: bool,
@@ -199,7 +203,13 @@ impl qobject::QuickshellGlobal {
     }
 
     fn has_version_features(&self, major: i32, minor: i32, features: &QStringList) -> bool {
-        features.len() == 0 && self.has_version(major, minor)
+        // Same order as upstream's PreprocEnv::hasVersion: an older version passes whatever
+        // the features, the current one only with all of them.
+        if (major, minor) < COMPAT_VERSION {
+            return true;
+        }
+        let all = (0..features.len()).all(|i| features.get(i).is_some_and(|f| FEATURES.contains(&f.to_string().as_str())));
+        all && (major, minor) == COMPAT_VERSION
     }
 
     fn inhibit_reload_popup(&self) {}

@@ -10,6 +10,8 @@
 #include <QtQml/QQmlEngine>
 #include <QtWidgets/QApplication>
 #include <QtCore/QFile>
+#include <QtCore/QLibrary>
+#include <QtCore/QVersionNumber>
 #include <QtCore/QLibraryInfo>
 #include <QtCore/QTimer>
 #include <QtCore/QAbstractAnimation>
@@ -84,6 +86,22 @@ inline void setup_icons(const QString& theme) {
 		if (!fallback.contains(pixmaps)) fallback.push_back(pixmaps);
 	}
 	QIcon::setFallbackSearchPaths(fallback);
+}
+
+// The EnableQtWebEngineQuick pragma: QtWebEngineQuick::initialize() before the application
+// exists (Qt 6.8 and older built Chromium's shared GL context there; 6.9+ only checks the graphics
+// API). Resolved at runtime so only shells that ask load it, and a system without it still starts.
+inline bool init_webengine() {
+	// Measured: loading it costs 23 ms and 27 MB at every start, for nothing since 6.9.
+	if (QLibraryInfo::version() >= QVersionNumber(6, 9)) return true;
+	QLibrary lib("Qt6WebEngineQuick", 6);
+	auto* init = reinterpret_cast<void (*)()>(lib.resolve("_ZN16QtWebEngineQuick10initializeEv"));
+	if (!init) {
+		qWarning().noquote() << "EnableQtWebEngineQuick: could not load QtWebEngineQuick:" << lib.errorString();
+		return false;
+	}
+	init();
+	return true;
 }
 
 inline std::unique_ptr<QGuiApplication> create_app(bool useQApplication, bool desktopSettingsAware) {

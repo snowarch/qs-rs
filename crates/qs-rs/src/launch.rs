@@ -8,6 +8,7 @@ pub struct Pragmas {
     pub desktop_settings_aware: bool,
     pub use_system_style: bool,
     pub drop_expensive_fonts: bool,
+    pub enable_webengine: bool,
     pub icon_theme: Option<String>,
     pub app_id: Option<String>,
     pub shell_id: Option<String>,
@@ -42,6 +43,8 @@ pub fn parse(text: &str) -> Result<Pragmas, String> {
             p.use_system_style = true;
         } else if pragma == "DropExpensiveFonts" {
             p.drop_expensive_fonts = true;
+        } else if pragma == "EnableQtWebEngineQuick" {
+            p.enable_webengine = true;
         } else if let Some(v) = arg("IconTheme ") {
             p.icon_theme = Some(v);
         } else if let Some(v) = arg("AppId ") {
@@ -138,6 +141,8 @@ mod tests {
         )
         .unwrap();
         assert!(p.use_qapplication);
+        assert!(!p.enable_webengine, "a //-@ line is a disabled pragma");
+        assert!(parse("//@ pragma EnableQtWebEngineQuick\n").unwrap().enable_webengine);
         assert_eq!(p.shell_id.as_deref(), Some("inir"));
         assert_eq!(p.env, vec![("QS_NO_RELOAD_POPUP".into(), "1".into())]);
         assert_eq!(p.default_env, vec![("QT_LOGGING_RULES".into(), "a=false;b=false".into())]);

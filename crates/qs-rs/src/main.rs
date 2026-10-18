@@ -399,6 +399,9 @@ fn run_shell(cli: &cli::Cli, config: PathBuf, started: std::time::Instant) -> i3
     }
     host::ffi::setup_icons(&QString::from(pragmas.icon_theme.as_deref().unwrap_or_default()));
     let mut app = host::ffi::create_app(pragmas.use_qapplication, pragmas.desktop_settings_aware);
+    if pragmas.enable_webengine {
+        host::ffi::init_webengine();
+    }
     host::ffi::configure_app(&QString::from(pragmas.app_id.as_deref().unwrap_or("org.quickshell")), pragmas.native_text_rendering);
     // QML debug server for qmlprofiler/GammaRay before the engine: upstream's `--debug PORT
     // [--waitfordebug]`, or QSRS_QML_DEBUG=PORT[,block].
