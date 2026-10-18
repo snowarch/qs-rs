@@ -46,8 +46,8 @@ Qt 6.12, Mesa 26.2. A single benchmark is never the whole truth, but this one is
 
 inir runs on it as a full daily session: bar, dock, panels, notifications, tray and menus,
 PipeWire, MPRIS, UPower, Bluetooth, NetworkManager, Polkit agent, PAM lock screen, session lock,
-toplevels, idle monitor, IPC, hot reload. Animations step at the screen's refresh rate (one GL
-context for every window, so no per-window render threads). Still missing: `ScreencopyView`
+toplevels, idle monitor, IPC, hot reload. Animations step once per frame, at that frame's own time
+(one GL context for every window, so no per-window render threads). Still missing: `ScreencopyView`
 pixels (the type loads, capture is not ported) and `IdleInhibitor`.
 Shells other than inir may trip over types nobody asked for yet.
 
