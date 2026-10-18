@@ -197,12 +197,22 @@ impl Worker {
     {
         self.0.send(Box::new(move |conn| {
             Box::pin(async move {
-                if let Err(e) = f(conn).await {
-                    quickshell::qs_log!(warn, "quickshell.dbus", "{what} failed: {e}");
+                match f(conn).await {
+                    Ok(()) => {}
+                    // The peer left the bus between the event and this call (a player closing, a
+                    // tray app quitting): nothing failed on our side.
+                    Err(e) if peer_gone(&e) => quickshell::qs_log!(debug, "quickshell.dbus", "{what}: peer gone ({e})"),
+                    Err(e) => quickshell::qs_log!(warn, "quickshell.dbus", "{what} failed: {e}"),
                 }
             })
         }));
     }
+}
+
+/// The call's destination is no longer on the bus.
+pub fn peer_gone(e: &zbus::Error) -> bool {
+    matches!(e, zbus::Error::MethodError(name, _, _)
+        if name.as_str() == "org.freedesktop.DBus.Error.ServiceUnknown" || name.as_str() == "org.freedesktop.DBus.Error.NameHasNoOwner")
 }
 
 /// Owns `name` without queueing (like QDBusConnection::registerService) and claims it again each
