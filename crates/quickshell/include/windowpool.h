@@ -40,6 +40,7 @@ struct QsWindowPool {
 
 	// Called right before the old root is deleted.
 	static void stash() {
+		dropTimer()->stop();
 		auto& live = QsWindowPool::live();
 		live.removeAll(nullptr);
 		for (auto& window: live) {
@@ -80,6 +81,8 @@ struct QsWindowPool {
 				window->setProperty("_qsStashed", false);
 				reused()++;
 				lastClaim() = sinceLoad().isValid() ? sinceLoad().elapsed() : -1;
+				// Claims still arriving: a slow start gets more time.
+				if (dropTimer()->isActive() && dropTimer()->remainingTime() < 1500) dropTimer()->start(1500);
 				return window;
 			}
 		}
@@ -105,22 +108,25 @@ struct QsWindowPool {
 	}
 
 	// Called once the new root is loaded. Shells create windows after that too (inir's deferred
-	// loaders, Loaders, incubation), so what nobody claimed goes a while later, unless another
-	// reload stashed meanwhile.
+	// loaders, Loaders, incubation), so what nobody claimed goes 3 s later, or 1.5 s after the
+	// last claim; another reload restarts the wait.
 	static void drop() {
 		sinceLoad().start();
-		auto serial = ++dropSerial();
-		QTimer::singleShot(3000, [serial] {
-			if (serial == dropSerial()) dropNow();
-		});
+		dropTimer()->start(3000);
 	}
 
-	static int& dropSerial() {
-		static int serial = 0;
-		return serial;
+	static QTimer* dropTimer() {
+		static auto* timer = [] {
+			auto* t = new QTimer();
+			t->setSingleShot(true);
+			QObject::connect(t, &QTimer::timeout, [] { dropNow(); });
+			return t;
+		}();
+		return timer;
 	}
 
 	static void dropNow() {
+		dropTimer()->stop();
 		int closed = yielded();
 		yielded() = 0;
 		for (auto& list: stashed()) {
