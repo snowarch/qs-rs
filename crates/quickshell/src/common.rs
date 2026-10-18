@@ -50,6 +50,19 @@ pub fn shell_dir(var: &str, fallback: &str, shell_id: &str, override_: Option<&s
     }
 }
 
+/// `Quickshell.watchFiles`, process-wide like upstream's QuickshellSettings: a reload makes a new
+/// singleton, the setting stays.
+static WATCH_FILES: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+pub fn watch_files() -> bool {
+    WATCH_FILES.load(std::sync::atomic::Ordering::Relaxed) && std::env::var_os("QS_DISABLE_FILE_WATCHER").is_none_or(|v| v.is_empty())
+}
+
+/// Returns whether the value changed.
+pub fn set_watch_files(on: bool) -> bool {
+    WATCH_FILES.swap(on, std::sync::atomic::Ordering::Relaxed) != on
+}
+
 type ReloadHook = Box<dyn Fn(bool) + Send + Sync>;
 static RELOAD: OnceLock<ReloadHook> = OnceLock::new();
 

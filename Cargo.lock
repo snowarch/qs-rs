@@ -1043,6 +1043,7 @@ dependencies = [
  "cxx-qt-build",
  "cxx-qt-lib",
  "libc",
+ "notify",
  "quickshell",
  "quickshell_bluetooth",
  "quickshell_dbusmenu",

@@ -24,7 +24,7 @@ pub mod qobject {
         #[qproperty(QString, shell_id, cxx_name = "shellId", READ = shell_id, CONSTANT)]
         #[qproperty(i32, process_id, cxx_name = "processId", READ = process_id, CONSTANT)]
         #[qproperty(QString, working_directory, cxx_name = "workingDirectory", READ = working_directory, WRITE = set_working_directory, NOTIFY)]
-        #[qproperty(bool, watch_files, cxx_name = "watchFiles")]
+        #[qproperty(bool, watch_files, cxx_name = "watchFiles", READ = watch_files, WRITE = set_watch_files, NOTIFY)]
         type QuickshellGlobal = super::QuickshellGlobalRust;
 
         fn shell_dir(self: &QuickshellGlobal) -> QString;
@@ -35,6 +35,8 @@ pub mod qobject {
         fn process_id(self: &QuickshellGlobal) -> i32;
         fn working_directory(self: &QuickshellGlobal) -> QString;
         fn set_working_directory(self: Pin<&mut QuickshellGlobal>, dir: QString);
+        fn watch_files(self: &QuickshellGlobal) -> bool;
+        fn set_watch_files(self: Pin<&mut QuickshellGlobal>, on: bool);
 
         #[qinvokable]
         fn env(self: &QuickshellGlobal, name: &QString) -> QVariant;
@@ -94,15 +96,8 @@ pub const COMPAT_VERSION: (i32, i32) = (0, 3);
 /// and Chromium needs argv[0] (inir's patched build sets it); qs-rs passes one.
 pub const FEATURES: &[&str] = &["webengine"];
 
-pub struct QuickshellGlobalRust {
-    watch_files: bool,
-}
-
-impl Default for QuickshellGlobalRust {
-    fn default() -> Self {
-        Self { watch_files: true }
-    }
-}
+#[derive(Default)]
+pub struct QuickshellGlobalRust {}
 
 fn qs(p: &Path) -> QString {
     QString::from(&*p.to_string_lossy())
@@ -134,6 +129,16 @@ impl qobject::QuickshellGlobal {
 
     fn working_directory(&self) -> QString {
         std::env::current_dir().map(|d| qs(&d)).unwrap_or_default()
+    }
+
+    fn watch_files(&self) -> bool {
+        crate::common::watch_files()
+    }
+
+    fn set_watch_files(self: Pin<&mut Self>, on: bool) {
+        if crate::common::set_watch_files(on) {
+            self.watch_files_changed();
+        }
     }
 
     fn set_working_directory(self: Pin<&mut Self>, dir: QString) {

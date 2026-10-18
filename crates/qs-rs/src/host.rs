@@ -43,8 +43,11 @@ pub static SHELL: std::sync::OnceLock<(std::path::PathBuf, std::path::PathBuf)> 
 /// VFS. Returns the error, empty when the new tree is in place.
 fn rescan_vfs() -> String {
     let Some((root_file, vfs)) = SHELL.get() else { return "no shell to reload".into() };
-    match crate::scan::Scan::new(root_file).and_then(|scan| scan.write_vfs(vfs)) {
-        Ok(()) => String::new(),
+    match crate::scan::Scan::new(root_file).and_then(|scan| scan.write_vfs(vfs).map(|()| scan)) {
+        Ok(scan) => {
+            crate::watchfiles::track(scan.hashes);
+            String::new()
+        }
         Err(e) => format!("scan of {} failed: {e}", root_file.display()),
     }
 }

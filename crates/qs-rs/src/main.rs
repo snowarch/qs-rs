@@ -21,6 +21,7 @@ mod errors;
 mod host;
 mod launch;
 mod scan;
+mod watchfiles;
 
 use cxx_qt_lib::QString;
 use quickshell::common::{ShellInfo, shell_dir};
@@ -398,6 +399,9 @@ fn run_shell(cli: &cli::Cli, config: PathBuf, started: std::time::Instant) -> i3
         host::ffi::set_plugin_path(&qstr(&dir));
     }
     host::ffi::setup_icons(&QString::from(pragmas.icon_theme.as_deref().unwrap_or_default()));
+    if pragmas.enable_webengine {
+        host::ffi::init_webengine();
+    }
     let mut app = host::ffi::create_app(pragmas.use_qapplication, pragmas.desktop_settings_aware);
     if pragmas.enable_webengine {
         host::ffi::init_webengine();
@@ -427,6 +431,7 @@ fn run_shell(cli: &cli::Cli, config: PathBuf, started: std::time::Instant) -> i3
     if !root.is_null() {
         let _ = host::SHELL.set((root_file.clone(), vfs.clone()));
         unsafe { host::ffi::install_reload(engine, root, &qstr(&vfs_root), &qstr(&entry)) };
+        watchfiles::track(scan.hashes);
         quickshell::log::emit(quickshell::log::Level::Info, "default", "Configuration Loaded".into());
         let (alloc, resident) = malloc_stats().unwrap_or_default();
         quickshell::qs_log!(

@@ -16,6 +16,15 @@ pub struct Scan {
     pub files: BTreeSet<PathBuf>,
     /// Synthesized file contents keyed by real path (qmldir files).
     pub intercepts: BTreeMap<PathBuf, String>,
+    /// Content hash of each file read, what `Quickshell.watchFiles` compares a change against.
+    pub hashes: BTreeMap<PathBuf, u64>,
+}
+
+pub fn content_hash(data: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::hash::DefaultHasher::new();
+    data.hash(&mut h);
+    h.finish()
 }
 
 #[derive(Default, Debug)]
@@ -105,6 +114,7 @@ impl Scan {
             return None;
         }
         let text = fs::read_to_string(path).ok()?;
+        self.hashes.insert(path.to_path_buf(), content_hash(text.as_bytes()));
         let mut info = FileInfo::default();
         let mut imports = Vec::new();
         // `import "root:X"` lines, rewritten to relative paths in the VFS copy (Qt treats an
