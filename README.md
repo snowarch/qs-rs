@@ -88,6 +88,8 @@ Same A/B, same machine. CPU is shown against Quickshell in that run, since it dr
   to the screen, windows kept across a reload, `qs errors`.
 - **2026-10-18:** `watchFiles` (save to reload in 0.16 s, one reload per burst of saves),
   `updatesEnabled`, and WebEngine: inir's sidebar web apps run here, which stock Quickshell can't do.
+  Screen capture too: inir's anti-flashbang now reads the screen in 8 ms instead of 328 ms of
+  `grim | magick`, so it dims before the flash instead of after.
 
 </details>
 
@@ -103,12 +105,12 @@ inir runs on it as a full daily session, all three families (ii, Waffle, iRiS).
 | Wayland: layer shell, session lock, toplevels, idle monitor, clipboard | done |
 | services: PipeWire, MPRIS, UPower, Bluetooth, NetworkManager, notifications, tray, Polkit, PAM | done |
 | Hyprland | IPC done; shortcuts and focus grab inert (unused on niri) |
-| `ScreencopyView` | loads; capture not ported |
+| `ScreencopyView` | screens done (wlr-screencopy, shared memory); windows need a protocol niri 26.04 lacks |
 | `IdleInhibitor`, `DataStream`, `SocketServer`, widget wrappers | missing; inir doesn't use them |
 | I3/Sway, Greetd, X11 | out of scope |
 
-Left that inir actually touches: screen capture for `ScreencopyView` (on niri it calls `grim`
-instead, three times over).
+Left that inir actually touches: its region selector and recorder still shell out to `grim`,
+and captures still go through the CPU (zero-copy dmabuf frames are next).
 
 ## Finding what breaks
 
