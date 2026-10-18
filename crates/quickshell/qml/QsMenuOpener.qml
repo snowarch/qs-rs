@@ -19,10 +19,15 @@ QtObject {
         if (_entry) _entry.ref()
     }
     function _onHandleMenu() { _setEntry(_handle?.menu ?? null) }
+    // A Connections goes with the opener; a manual connect() outlived it when the engine tore the
+    // opener down without onDestruction, and the handle then called into a dead scope.
+    property Connections _handleEvents: Connections {
+        target: root._handle
+        function onMenuChanged() { root._onHandleMenu() }
+    }
     function _release() {
         _setEntry(null)
         if (_handle) {
-            _handle.menuChanged.disconnect(_onHandleMenu)
             _handle.unrefHandle()
             _handle = null
         }
@@ -32,7 +37,6 @@ QtObject {
         _release()
         if (!menu) return
         _handle = menu
-        _handle.menuChanged.connect(_onHandleMenu)
         _onHandleMenu()
         _handle.refHandle()
     }
