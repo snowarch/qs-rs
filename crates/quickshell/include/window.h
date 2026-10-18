@@ -4,6 +4,8 @@
 #include <QtCore/QObject>
 #include <QtCore/QPointer>
 #include <QtGui/QRegion>
+#include <QtGui/QGuiApplication>
+#include <QtGui/QScreen>
 #include <QtGui/QWindow>
 #include <QtQml/QQmlComponent>
 #include <QtQml/QQmlContext>
@@ -11,6 +13,7 @@
 #include <QtQml/qqml.h>
 #include <QtQuick/QQuickItem>
 #include <QtQuick/QQuickWindow>
+#include "windowpool.h"
 #include <QtQml/QQmlListProperty>
 #include <cmath>
 #include <QtGui/QOffscreenSurface>
@@ -304,6 +307,59 @@ public:
 		if (!window) return {};
 		auto r = window->mask().boundingRect();
 		return QString("%1,%2 %3x%4").arg(r.x()).arg(r.y()).arg(r.width()).arg(r.height());
+	}
+
+	// The backing window of a proxy: a stashed one with the same key, or a new one. Owned by the
+	// proxy (QObject child), with `content` as the proxy's content item inside it.
+	Q_INVOKABLE QQuickWindow* acquireWindow(QObject* proxy, QQuickItem* content, const QString& tag, const QString& screen) {
+		if (!proxy) return nullptr;
+		QString key;
+		if (!tag.isEmpty()) {
+			auto* ctx = qmlContext(proxy);
+			key = (ctx ? ctx->baseUrl().toString() : QString()) + '|' + tag + '|' + screen + '|' + QsWindowPool::treePath(proxy);
+		}
+		auto* window = key.isEmpty() ? nullptr : QsWindowPool::take(key);
+		bool reused = window != nullptr;
+		if (!reused) {
+			window = new QQuickWindow();
+			QsWindowPool::live().append(window);
+		}
+		QQmlEngine::setObjectOwnership(window, QQmlEngine::CppOwnership);
+		static_cast<QObject*>(window)->setParent(proxy);
+		window->setProperty("_qsReuseKey", key);
+		if (content) content->setParentItem(window->contentItem());
+		if (reused) {
+			// Stays frozen on the old frame until the proxy shows it (thawWindow): shells often
+			// start a window hidden until their config loads, which would unmap it meanwhile.
+			window->setProperty("_qsWindow", QVariant::fromValue(proxy));
+		} else {
+			this->registerProxy(window, proxy);
+		}
+		return window;
+	}
+
+	Q_INVOKABLE bool isFrozen(QQuickWindow* window) { return window && window->property("_qsFrozen").toBool(); }
+
+	Q_INVOKABLE void thawWindow(QQuickWindow* window) {
+		if (!window || !this->isFrozen(window)) return;
+		window->setProperty("_qsFrozen", false);
+		window->removeEventFilter(QsWindowFreeze::instance());
+		// Expose and update requests were dropped while frozen: draw the new content.
+		window->update();
+	}
+
+	// QWindow::screen is not a QML property of a plain QQuickWindow. QML hands screens around as
+	// QQuickScreenInfo (Qt.application.screens, ShellScreen._info): matched by name.
+	Q_INVOKABLE void setWindowScreen(QWindow* window, QObject* info) {
+		if (!window || !info) return;
+		auto* screen = qobject_cast<QScreen*>(info);
+		if (!screen) {
+			auto name = info->property("name").toString();
+			for (auto* s: QGuiApplication::screens()) {
+				if (s->name() == name) screen = s;
+			}
+		}
+		if (screen && window->screen() != screen) window->setScreen(screen);
 	}
 
 	Q_INVOKABLE void registerProxy(QQuickWindow* window, QObject* proxy) {

@@ -30,12 +30,13 @@ ProxyWindowBase {
     // Placement is read when the popup surface is created: a change while shown re-creates it.
     property bool _placing: false
     function _reposition() {
-        if (!_window.visible || _placing) return
+        if (!_window || !_window.visible || _placing) return
         _placing = true
         _hide()
         _syncVisible()
         _placing = false
     }
+    on_WindowChanged: if (_window) _place()
     on_AboutToShow: {
         _window.transientParent = _parent._backingWindow
         _window.flags = grabFocus ? Qt.Popup : Qt.ToolTip

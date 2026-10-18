@@ -67,12 +67,27 @@ public:
 
 	explicit BackgroundEffect(QObject* proxy): QObject(nullptr), proxy(proxy) {
 		QObject::connect(proxy, &QObject::destroyed, this, &BackgroundEffect::onProxyDestroyed);
-		this->window = proxy->property("_backingWindow").value<QQuickWindow*>();
-		if (this->window == nullptr) return;
-		this->window->installEventFilter(this);
-		QObject::connect(this->window, &QWindow::visibleChanged, this, &BackgroundEffect::onWindowVisibleChanged);
-		QObject::connect(this->window, &QQuickWindow::afterAnimating, this, &BackgroundEffect::onBeforeFrame);
-		QObject::connect(this->window, &QWindow::screenChanged, this, &BackgroundEffect::updateBlurRegion);
+		// The proxy gets its backing window once complete (maybe one reused from before a reload).
+		auto* mo = proxy->metaObject();
+		auto notify = mo->property(mo->indexOfProperty("_backingWindow")).notifySignal();
+		auto slot = this->metaObject()->method(this->metaObject()->indexOfMethod("onBackingWindowChanged()"));
+		if (notify.isValid()) QObject::connect(proxy, notify, this, slot);
+		this->onBackingWindowChanged();
+	}
+
+	Q_INVOKABLE void onBackingWindowChanged() {
+		auto* window = this->proxy ? this->proxy->property("_backingWindow").value<QQuickWindow*>() : nullptr;
+		if (window == this->window) return;
+		if (this->window) {
+			this->window->removeEventFilter(this);
+			QObject::disconnect(this->window, nullptr, this, nullptr);
+		}
+		this->window = window;
+		if (window == nullptr) return;
+		window->installEventFilter(this);
+		QObject::connect(window, &QWindow::visibleChanged, this, &BackgroundEffect::onWindowVisibleChanged);
+		QObject::connect(window, &QQuickWindow::afterAnimating, this, &BackgroundEffect::onBeforeFrame);
+		QObject::connect(window, &QWindow::screenChanged, this, &BackgroundEffect::updateBlurRegion);
 		this->onWindowVisibleChanged();
 	}
 
@@ -184,9 +199,11 @@ private:
 
 	void onProxyDestroyed() {
 		// Kept until the wl_surface goes away: destroying the effect first would show one frame
-		// without blur before the surface is destroyed.
+		// without blur before the surface is destroyed. A window kept for the next generation
+		// keeps its surface, frozen until the new proxy's effect is set: release ours now.
 		this->proxy = nullptr;
-		if (this->surface == nullptr) this->deleteLater();
+		if (this->window && this->window->property("_qsStashed").toBool()) this->destroySurface();
+		else if (this->surface == nullptr) this->deleteLater();
 	}
 
 	QPointer<QObject> proxy;

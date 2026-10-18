@@ -31,6 +31,7 @@
 #include "rust/cxx.h"
 #include "quickshell/include/log.h"
 #include "quickshell/include/qsrs.h"
+#include "quickshell/include/windowpool.h"
 #include "quickshell/include/reload.h"
 
 namespace qsrs {
@@ -361,7 +362,7 @@ public:
 	    : engine(engine), root(root), importPath(std::move(importPath)), entry(std::move(entry)) {}
 
 	void reload(bool hard) {
-		Q_UNUSED(hard); // every reload is a new generation; windows are not carried over yet
+		Q_UNUSED(hard); // every reload is a new generation; shown windows are carried over (QsWindowPool)
 		if (this->reloading) return;
 		this->reloading = true;
 		this->doReload();
@@ -398,6 +399,9 @@ private:
 			return;
 		}
 
+		// Shown windows outlive the old generation, frozen on their last frame, for the new
+		// proxies to take back (QsWindowPool).
+		QsWindowPool::stash();
 		// The old generation: root first (its children may still reach the engine), then the engine.
 		delete this->root;
 		this->root = nullptr;
@@ -409,12 +413,14 @@ private:
 		auto* root = component->create();
 		delete component;
 		if (root == nullptr) {
+			QsWindowPool::dropNow();
 			qCritical() << "Failed to create the reloaded configuration";
 			return;
 		}
 		QQmlEngine::setObjectOwnership(root, QQmlEngine::CppOwnership);
 		this->root = root;
 		finish_load(*next, root);
+		QsWindowPool::drop();
 		qInfo() << "Configuration Loaded";
 		if (auto* qs = quickshell(next)) QMetaObject::invokeMethod(qs, "reloadCompleted");
 	}

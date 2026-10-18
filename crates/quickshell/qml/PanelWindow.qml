@@ -56,11 +56,13 @@ ProxyWindowBase {
     // The surface role is fixed when the platform window is created, so configure first.
     property bool _configured: false
     _ready: _configured
-    Component.onCompleted: { _configure(); _configured = true }
+    on_WindowChanged: if (_window) { _configure(); _configured = true }
+    // A reused surface keeps its layer and namespace: only a window with the same ones is taken.
+    _reuseTag: "panel:" + _layer + ":" + _namespace
 
     // Layer, namespace and output are fixed when the surface is created: recreate on change.
     function _recreate() {
-        if (!_window.visible) return
+        if (!_window || !_window.visible) return
         _hide()
         _syncVisible()
     }
