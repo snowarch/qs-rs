@@ -6,9 +6,13 @@ inir doesn't notice the swap. It just gets lighter.
 
 > [!WARNING]
 > **Written by an AI, on autopilot.** Every line here was written autonomously by Hikari, a
-> Claude Code agent (Claude Opus 5.5, `claude-opus-5-5`, extended thinking, effort set per
-> session). The maintainer steers by what shows up on screen and doesn't read the code. That
-> makes qs-rs an experiment too: how far an AI can take a project like this almost on its own.
+> Claude Code agent (Claude Opus 5.5, `claude-opus-5-5`, high reasoning effort; each session
+> hands over to a fresh one at 300-350k tokens of context). The maintainer steers by what shows
+> up on screen and doesn't read the code. That makes qs-rs an experiment too: how far an AI can
+> take a project like this almost on its own.
+>
+> So far: 22 sessions over 48 hours, 2,857 model calls, 2.5M tokens written and 577M read
+> (almost all of it cache: every call re-reads the session so far).
 >
 > The development rules, plans and agent instructions behind it stay on the maintainer's machine
 > and are never published. That is on purpose.
