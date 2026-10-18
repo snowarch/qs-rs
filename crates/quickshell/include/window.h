@@ -286,6 +286,11 @@ private:
 };
 
 // Helpers the QML window types call on their backing QQuickWindow.
+namespace qsrs {
+// src/cpp/windowprivate.cpp. Returns whether it changed.
+bool setWindowUpdatesEnabled(QQuickWindow* window, bool enabled);
+}
+
 class QsWindowSupport: public QObject {
 	Q_OBJECT;
 	QML_ELEMENT;
@@ -348,6 +353,12 @@ public:
 			this->registerProxy(window, proxy);
 		}
 		return window;
+	}
+
+	// Upstream's ProxyWindowBase::setUpdatesEnabled: the render loop skips a window whose private
+	// updatesEnabled is off, so it keeps its last frame on screen and costs nothing.
+	Q_INVOKABLE void setUpdatesEnabled(QQuickWindow* window, bool enabled) {
+		if (window && qsrs::setWindowUpdatesEnabled(window, enabled) && enabled) window->update();
 	}
 
 	Q_INVOKABLE bool isFrozen(QQuickWindow* window) { return window && window->property("_qsFrozen").toBool(); }

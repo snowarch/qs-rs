@@ -38,6 +38,7 @@ QtObject {
     onWidthChanged: if (width !== (_window ? _window.width : implicitWidth)) implicitWidth = width
     onHeightChanged: if (height !== (_window ? _window.height : implicitHeight)) implicitHeight = height
 
+    onUpdatesEnabledChanged: if (_window) QsWindowSupport.setUpdatesEnabled(_window, updatesEnabled)
     function _applyMask() { if (_window) QsWindowSupport.applyMask(_window, root.mask) }
     onMaskChanged: _applyMask()
 
@@ -120,6 +121,8 @@ QtObject {
     on_ReadyChanged: _syncVisible()
     Component.onCompleted: {
         _window = QsWindowSupport.acquireWindow(root, _content, _reuseTag, root.screen ? root.screen.name : "")
+        // Also resets a window taken over from a declaration that had it off.
+        QsWindowSupport.setUpdatesEnabled(_window, updatesEnabled)
         _applyScreen()
         _completed = true
         _applyMask()

@@ -7,8 +7,15 @@ fn qmake(var: &str) -> String {
 }
 
 fn main() {
-    // QRhi headers live in QtGui's versioned (semi-public) include dir.
-    let gui = std::path::PathBuf::from(qmake("QT_INSTALL_HEADERS")).join("QtGui").join(qmake("QT_VERSION"));
+    // QRhi headers live in QtGui's versioned (semi-public) include dir, QQuickWindowPrivate
+    // (updatesEnabled) in QtQuick's, which pulls in the other modules' private headers.
+    let headers = std::path::PathBuf::from(qmake("QT_INSTALL_HEADERS"));
+    let version = qmake("QT_VERSION");
+    let private: Vec<_> = ["QtCore", "QtGui", "QtQml", "QtQmlMeta", "QtQmlModels", "QtQuick"]
+        .iter()
+        .flat_map(|m| { let d = headers.join(m).join(&version); [d.clone(), d.join(m)] })
+        .filter(|d| d.is_dir())
+        .collect();
     let builder = CxxQtBuilder::new_qml_module(
         QmlModule::new("Quickshell")
             .version(0, 1)
@@ -20,8 +27,10 @@ fn main() {
     // SAFETY: only adds an include path.
     let builder = unsafe {
         builder.cc_builder(move |cc| {
-            cc.include(&gui);
-            cc.include(gui.join("QtGui"));
+            for d in &private {
+                cc.include(d);
+            }
+            cc.file("src/cpp/windowprivate.cpp");
         })
     };
     builder
