@@ -94,7 +94,8 @@ pub const COMPAT_VERSION: (i32, i32) = (0, 3);
 /// Upstream's "unreleased features" list, here what qs-rs runs that Quickshell does not:
 /// `Quickshell.hasVersion(0, 3, ["webengine"])` holds only on qs-rs. Quickshell hands Qt no argv,
 /// and Chromium needs argv[0] (inir's patched build sets it); qs-rs passes one.
-pub const FEATURES: &[&str] = &["webengine"];
+/// "screencopy-luminance": ScreencopyView.meanLuminance(), the frame's mean Rec. 709 luma.
+pub const FEATURES: &[&str] = &["webengine", "screencopy-luminance"];
 
 #[derive(Default)]
 pub struct QuickshellGlobalRust {}

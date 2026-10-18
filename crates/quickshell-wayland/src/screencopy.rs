@@ -34,6 +34,13 @@ pub mod qobject {
         #[cxx_name = "captureFrame"]
         fn capture_frame(self: Pin<&mut ScreencopyCapture>) -> bool;
 
+        /// Mean Rec. 709 luma of the current frame over every pixel, 0 to 1 (ImageMagick's
+        /// `-colorspace Gray` mean); -1 without a frame. qs-rs only (feature
+        /// "screencopy-luminance"): inir's anti-flashbang read it from grim | magick.
+        #[qinvokable]
+        #[cxx_name = "meanLuminance"]
+        fn mean_luminance(self: &ScreencopyCapture) -> f64;
+
         #[qsignal]
         fn stopped(self: Pin<&mut ScreencopyCapture>);
     }
@@ -66,6 +73,7 @@ pub struct ScreencopyCaptureRust {
     frame: QImage,
     buffer_size: QSize,
     buffer_transform: i32,
+    current: Option<Arc<ShmBuffer>>,
     context: Option<Arc<Context>>,
     generation: u64,
     update_queued: bool,
@@ -81,6 +89,7 @@ impl Default for ScreencopyCaptureRust {
             frame: QImage::default(),
             buffer_size: QSize::new(0, 0),
             buffer_transform: 0,
+            current: None,
             context: None,
             generation: 0,
             update_queued: false,
@@ -131,6 +140,36 @@ impl ShmBuffer {
         let buffer = pool.create_buffer(0, width, height, stride, format, &g.qh, ());
         pool.destroy();
         Some(Self { buffer, data: data.cast(), len, width, height, stride, format })
+    }
+
+    /// Mean Rec. 709 luma (ImageMagick's weights) over every pixel, 0 to 1.
+    fn mean_luma(&self) -> f64 {
+        use wl_shm::Format as F;
+        // Weights scaled to 16 bits; channel positions in a little endian 32-bit pixel.
+        const W: [u64; 3] = [13937, 46868, 4731];
+        let (r, g, b, ten) = match self.format {
+            F::Xrgb8888 | F::Argb8888 => (16, 8, 0, false),
+            F::Xbgr8888 | F::Abgr8888 => (0, 8, 16, false),
+            F::Xrgb2101010 | F::Argb2101010 => (20, 10, 0, true),
+            F::Xbgr2101010 | F::Abgr2101010 => (0, 10, 20, true),
+            _ => return -1.0,
+        };
+        let (mask, max) = if ten { (0x3ff_u32, 1023.0) } else { (0xff_u32, 255.0) };
+        let mut sum = 0u64;
+        for row in 0..self.height as usize {
+            let line = unsafe { std::slice::from_raw_parts(self.data.add(row * self.stride as usize), self.width as usize * 4) };
+            let mut acc = 0u64;
+            for px in line.chunks_exact(4) {
+                let v = u32::from_le_bytes([px[0], px[1], px[2], px[3]]);
+                acc += W[0] * ((v >> r) & mask) as u64 + W[1] * ((v >> g) & mask) as u64 + W[2] * ((v >> b) & mask) as u64;
+            }
+            sum += acc;
+        }
+        let pixels = self.width as f64 * self.height as f64;
+        if pixels == 0.0 {
+            return -1.0;
+        }
+        sum as f64 / 65536.0 / max / pixels
     }
 
     /// The QImage format that reads this buffer's bytes as they are (little endian).
@@ -493,6 +532,7 @@ impl qobject::ScreencopyCapture {
         }
         let Some(format) = buffer.image_format() else { return };
         let (width, height, stride) = (buffer.width, buffer.height, buffer.stride);
+        self.as_mut().rust_mut().current = Some(buffer.clone());
         let image = if stride == width * 4 {
             let data = buffer.data as *const u8;
             let info = Box::into_raw(Box::new(buffer)).cast();
@@ -540,12 +580,17 @@ impl qobject::ScreencopyCapture {
         self.stopped();
     }
 
+    fn mean_luminance(&self) -> f64 {
+        self.current.as_ref().map_or(-1.0, |b| b.mean_luma())
+    }
+
     fn set_frame(mut self: Pin<&mut Self>, image: QImage) {
         self.as_mut().rust_mut().frame = image;
         self.frame_changed();
     }
 
     fn clear(mut self: Pin<&mut Self>) {
+        self.as_mut().rust_mut().current = None;
         if self.has_content {
             self.as_mut().rust_mut().has_content = false;
             self.as_mut().has_content_changed();

@@ -112,6 +112,9 @@ ShellRoot {
                 view.grabToImage(r => { grabbed.source = r.url })
             } else if (root.step === 4) {
                 view.captureSource = null
+                // Re-assigning a screen recaptures without a "non captureable" warning.
+                view.captureSource = Quickshell.screens[0]
+                view.captureSource = null
                 root.step = 5
             } else {
                 check("null source drops content", !view.hasContent && view.sourceSize.width === 0)

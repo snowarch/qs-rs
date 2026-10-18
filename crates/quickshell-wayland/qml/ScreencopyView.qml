@@ -19,6 +19,10 @@ Item {
     property size constraintSize: Qt.size(0, 0)
     signal stopped()
 
+    // qs-rs only (hasVersion feature "screencopy-luminance"): mean Rec. 709 luma of the current
+    // frame, 0 to 1, or -1 without one.
+    function meanLuminance(): real { return _capture.meanLuminance() }
+
     function captureFrame() {
         if (!_capture.captureFrame()) console.warn(root, "Cannot capture frame, as no recording context is ready.")
     }
@@ -39,8 +43,11 @@ Item {
         return s
     }
 
-    readonly property bool _isScreen: captureSource !== null && captureSource._info !== undefined
-    onCaptureSourceChanged: if (captureSource !== null && !_isScreen) console.warn(root, "Capture source set to non captureable object.")
+    // A ShellScreen wraps Qt's screen info; anything else (a Toplevel) is not captureable here.
+    function _screenLike(source: QtObject): bool { return source !== null && source._info !== undefined }
+    readonly property bool _isScreen: _screenLike(captureSource)
+    // Not through _isScreen: a change handler can run before the bindings that depend on it.
+    onCaptureSourceChanged: if (captureSource !== null && !_screenLike(captureSource)) console.warn(root, "Capture source set to non captureable object.")
 
     QsScreencopyCapture {
         id: _capture
