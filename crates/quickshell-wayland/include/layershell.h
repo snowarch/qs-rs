@@ -94,6 +94,8 @@ public:
 	Q_INVOKABLE void configure(QWindow* window, int anchors, int layer, int keyboard, int exclusiveZone, int left, int top, int right, int bottom, const QString& scope) {
 		if (!window) return;
 		auto* ls = LayerShellQt::Window::get(window);
+		// Read by QsWindowPool: a frozen window gives way to a fresh one in its layer.
+		window->setProperty("_qsLayer", layer);
 		ls->setAnchors(LayerShellQt::Window::Anchors(anchors));
 		ls->setLayer(LayerShellQt::Window::Layer(layer));
 		ls->setKeyboardInteractivity(LayerShellQt::Window::KeyboardInteractivity(keyboard));

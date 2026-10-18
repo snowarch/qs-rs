@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QtCore/QDebug>
+#include <QtCore/QElapsedTimer>
 #include <QtCore/QEvent>
 #include <QtCore/QHash>
 #include <QtCore/QObject>
@@ -78,16 +79,36 @@ struct QsWindowPool {
 			if (window) {
 				window->setProperty("_qsStashed", false);
 				reused()++;
+				lastClaim() = sinceLoad().isValid() ? sinceLoad().elapsed() : -1;
 				return window;
 			}
 		}
 		return nullptr;
 	}
 
+	// A window of the new generation was shown that took nothing from the pool: frozen windows in
+	// its layer on its screen are a previous layout (another family, a removed panel) and would
+	// cover it until the drop, so they go now. Matching windows claim their own before showing.
+	static void yieldTo(QQuickWindow* fresh) {
+		if (stashed().isEmpty()) return;
+		auto layer = fresh->property("_qsLayer");
+		if (!layer.isValid()) return;
+		for (auto& list: stashed()) {
+			for (auto& window: list) {
+				if (!window || window->screen() != fresh->screen() || window->property("_qsLayer") != layer) continue;
+				window->deleteLater();
+				window = nullptr;
+				yielded()++;
+			}
+			list.removeAll(nullptr);
+		}
+	}
+
 	// Called once the new root is loaded. Shells create windows after that too (inir's deferred
 	// loaders, Loaders, incubation), so what nobody claimed goes a while later, unless another
 	// reload stashed meanwhile.
 	static void drop() {
+		sinceLoad().start();
 		auto serial = ++dropSerial();
 		QTimer::singleShot(3000, [serial] {
 			if (serial == dropSerial()) dropNow();
@@ -100,7 +121,8 @@ struct QsWindowPool {
 	}
 
 	static void dropNow() {
-		int closed = 0;
+		int closed = yielded();
+		yielded() = 0;
 		for (auto& list: stashed()) {
 			for (auto& window: list) {
 				if (window) {
@@ -110,8 +132,23 @@ struct QsWindowPool {
 			}
 		}
 		stashed().clear();
-		if (reused() + closed > 0) qInfo().noquote() << QString("Windows kept across the reload: %1 (closed: %2)").arg(reused()).arg(closed);
+		if (reused() + closed > 0) qInfo().noquote() << QString("Windows kept across the reload: %1 (closed: %2, last claim %3 ms after load)").arg(reused()).arg(closed).arg(lastClaim());
 		reused() = 0;
+		lastClaim() = 0;
+	}
+
+	static QElapsedTimer& sinceLoad() {
+		static QElapsedTimer timer;
+		return timer;
+	}
+	static qint64& lastClaim() {
+		static qint64 ms = 0;
+		return ms;
+	}
+
+	static int& yielded() {
+		static int count = 0;
+		return count;
 	}
 
 	static int& reused() {

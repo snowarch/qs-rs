@@ -309,6 +309,15 @@ public:
 		return QString("%1,%2 %3x%4").arg(r.x()).arg(r.y()).arg(r.width()).arg(r.height());
 	}
 
+	// Frozen windows of the previous generation still waiting for a claim (tests).
+	Q_INVOKABLE int stashedWindows() {
+		int count = 0;
+		for (auto& list: QsWindowPool::stashed()) {
+			for (auto& window: list) count += window ? 1 : 0;
+		}
+		return count;
+	}
+
 	// The backing window of a proxy: a stashed one with the same key, or a new one. Owned by the
 	// proxy (QObject child), with `content` as the proxy's content item inside it.
 	Q_INVOKABLE QQuickWindow* acquireWindow(QObject* proxy, QQuickItem* content, const QString& tag, const QString& screen) {
@@ -323,6 +332,9 @@ public:
 		if (!reused) {
 			window = new QQuickWindow();
 			QsWindowPool::live().append(window);
+			QObject::connect(window, &QWindow::visibleChanged, window, [window](bool visible) {
+				if (visible) QsWindowPool::yieldTo(window);
+			});
 		}
 		QQmlEngine::setObjectOwnership(window, QQmlEngine::CppOwnership);
 		static_cast<QObject*>(window)->setParent(proxy);
