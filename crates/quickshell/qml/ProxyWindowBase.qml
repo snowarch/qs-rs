@@ -9,6 +9,13 @@ QtObject {
     id: root
     default property alias data: _content.data
     readonly property Item contentItem: _content
+    // Upstream's mapping helpers, in content item coordinates (Item.mapFromItem's forms).
+    function itemPosition(item: Item): point { return item ? _content.mapFromItem(item, 0, 0) : Qt.point(0, 0) }
+    function itemRect(item: Item): rect { return item ? _content.mapFromItem(item, 0, 0, item.width, item.height) : Qt.rect(0, 0, 0, 0) }
+    function mapFromItem(item: Item, ...args): var {
+        if (!item) { console.error("Cannot map position of null item."); return args.length > 2 ? Qt.rect(0, 0, 0, 0) : Qt.point(0, 0) }
+        return _content.mapFromItem(item, ...args)
+    }
     property bool visible: true
     property int implicitWidth: 100
     property int implicitHeight: 100

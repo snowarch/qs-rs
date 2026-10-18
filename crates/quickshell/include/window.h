@@ -3,6 +3,7 @@
 // express: QsWindow attached lookup and input masks.
 #include <QtCore/QObject>
 #include <QtCore/QPointer>
+#include <QtCore/QDebug>
 #include <QtGui/QRegion>
 #include <QtGui/QGuiApplication>
 #include <QtGui/QScreen>
@@ -683,7 +684,37 @@ public:
 		return win ? win->contentItem() : nullptr;
 	}
 
-	static QsWindowAttached* qmlAttachedProperties(QObject* object) { return new QsWindowAttached(object); }
+	// Upstream's mapping helpers: coordinates in the Quickshell window's content item.
+	Q_INVOKABLE [[nodiscard]] QPointF itemPosition(QQuickItem* item) const {
+		auto* content = this->mappingRoot("itemPosition", item);
+		return content ? content->mapFromItem(item, 0, 0) : QPointF();
+	}
+	Q_INVOKABLE [[nodiscard]] QRectF itemRect(QQuickItem* item) const {
+		auto* content = this->mappingRoot("itemRect", item);
+		return content ? content->mapFromItem(item, item->boundingRect()) : QRectF();
+	}
+	Q_INVOKABLE [[nodiscard]] QPointF mapFromItem(QQuickItem* item, QPointF point) const {
+		auto* content = this->mappingRoot("mapFromItem", item);
+		return content ? content->mapFromItem(item, point) : QPointF();
+	}
+	Q_INVOKABLE [[nodiscard]] QPointF mapFromItem(QQuickItem* item, qreal x, qreal y) const {
+		return this->mapFromItem(item, QPointF(x, y));
+	}
+	Q_INVOKABLE [[nodiscard]] QRectF mapFromItem(QQuickItem* item, QRectF rect) const {
+		auto* content = this->mappingRoot("mapFromItem", item);
+		return content ? content->mapFromItem(item, rect) : QRectF();
+	}
+	Q_INVOKABLE [[nodiscard]] QRectF mapFromItem(QQuickItem* item, qreal x, qreal y, qreal width, qreal height) const {
+		return this->mapFromItem(item, QRectF(x, y, width, height));
+	}
+
+	// Like upstream, an object that is not an item (a LazyLoader in a bar, say) answers for the
+	// closest item among its parents.
+	static QsWindowAttached* qmlAttachedProperties(QObject* object) {
+		auto* owner = object;
+		while (owner && !qobject_cast<QQuickItem*>(owner)) owner = owner->parent();
+		return new QsWindowAttached(owner ? owner : object);
+	}
 
 signals:
 	void windowChanged();
@@ -706,6 +737,20 @@ private:
 		if (mBacking) mBacking->removeEventFilter(this);
 		mBacking = backing;
 		if (backing) backing->installEventFilter(this);
+	}
+
+	// The window's content item (ProxyWindowBase.contentItem), with upstream's complaints.
+	[[nodiscard]] QQuickItem* mappingRoot(const char* call, QQuickItem* item) const {
+		auto* window = this->window();
+		if (!window) {
+			qCritical().noquote() << "Cannot call" << call << "before item is a member of a window.";
+			return nullptr;
+		}
+		if (!item) {
+			qCritical() << "Cannot map position of null item.";
+			return nullptr;
+		}
+		return window->property("contentItem").value<QQuickItem*>();
 	}
 
 	QPointer<QQuickWindow> mBacking;
