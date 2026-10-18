@@ -53,11 +53,17 @@ QtObject {
         height: root._window ? root._window.height : root.implicitHeight
     }
 
+    // Axes the compositor sizes (a panel anchored to both opposite edges): like upstream's
+    // WlrLayershell::trySetWidth, the implicit size never reaches the window there, or a window
+    // taken over on reload would shrink to it until the next configure.
+    property bool _compositorWidth: false
+    property bool _compositorHeight: false
+
     // Bindings and handlers on the window live in the proxy, so they go with it when a reload
     // hands the window to the next generation. RestoreNone: a frozen window must not resize.
     property list<QtObject> _windowBindings: [
-        Binding { target: root._window; property: "width"; value: root.implicitWidth; restoreMode: Binding.RestoreNone },
-        Binding { target: root._window; property: "height"; value: root.implicitHeight; restoreMode: Binding.RestoreNone },
+        Binding { target: root._window; when: !root._compositorWidth; property: "width"; value: root.implicitWidth; restoreMode: Binding.RestoreNone },
+        Binding { target: root._window; when: !root._compositorHeight; property: "height"; value: root.implicitHeight; restoreMode: Binding.RestoreNone },
         Binding { target: root._window; property: "color"; value: root.color; restoreMode: Binding.RestoreNone }
     ]
     function _applyScreen() {

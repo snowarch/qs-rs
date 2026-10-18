@@ -45,6 +45,9 @@ ProxyWindowBase {
         return 0
     }
 
+    _compositorWidth: anchors.left && anchors.right
+    _compositorHeight: anchors.top && anchors.bottom
+
     readonly property int _anchorBits: (anchors.top ? 1 : 0) | (anchors.bottom ? 2 : 0) | (anchors.left ? 4 : 0) | (anchors.right ? 8 : 0)
     // Any input change reconfigures the surface; LayerShellQt applies live what the protocol allows.
     readonly property var _config: [_anchorBits, _layer, _keyboardFocus, _exclusiveZone, margins.left, margins.top, margins.right, margins.bottom, _namespace]
