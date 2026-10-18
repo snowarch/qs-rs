@@ -86,6 +86,8 @@ Same A/B, same machine. CPU is shown against Quickshell in that run, since it dr
 - **2026-10-16, night:** hot reload; notifications, tray and Polkit survive it.
 - **2026-10-17:** cold start 6.9 s to 2.5 s, control panel peak 723 MB to 513 MB, animations paced
   to the screen, windows kept across a reload, `qs errors`.
+- **2026-10-18:** `watchFiles` (save to reload in 0.16 s, one reload per burst of saves),
+  `updatesEnabled`, and WebEngine: inir's sidebar web apps run here, which stock Quickshell can't do.
 
 </details>
 
@@ -95,7 +97,8 @@ inir runs on it as a full daily session, all three families (ii, Waffle, iRiS).
 
 | area | state |
 |:---|:---|
-| core, windows, popups, hot reload | done |
+| core, windows, popups, hot reload, `watchFiles`, `updatesEnabled` | done |
+| WebEngine (`hasVersion(0, 3, ["webengine"])`) | done; not something Quickshell has |
 | Io: Process, FileView, JsonAdapter, Socket, IPC | done |
 | Wayland: layer shell, session lock, toplevels, idle monitor, clipboard | done |
 | services: PipeWire, MPRIS, UPower, Bluetooth, NetworkManager, notifications, tray, Polkit, PAM | done |
@@ -104,8 +107,8 @@ inir runs on it as a full daily session, all three families (ii, Waffle, iRiS).
 | `IdleInhibitor`, `DataStream`, `SocketServer`, widget wrappers | missing; inir doesn't use them |
 | I3/Sway, Greetd, X11 | out of scope |
 
-Left that inir actually touches: `watchFiles` (its dev reload), `updatesEnabled` (the ii sidebar
-stops drawing while hidden) and screen capture for `ScreencopyView`.
+Left that inir actually touches: screen capture for `ScreencopyView` (on niri it calls `grim`
+instead, three times over).
 
 ## Finding what breaks
 
