@@ -95,7 +95,9 @@ pub const COMPAT_VERSION: (i32, i32) = (0, 3);
 /// `Quickshell.hasVersion(0, 3, ["webengine"])` holds only on qs-rs. Quickshell hands Qt no argv,
 /// and Chromium needs argv[0] (inir's patched build sets it); qs-rs passes one.
 /// "screencopy-luminance": ScreencopyView.meanLuminance(), the frame's mean Rec. 709 luma.
-pub const FEATURES: &[&str] = &["webengine", "screencopy-luminance"];
+/// "toplevel-capture": ScreencopyView records a Toplevel (or a `niriWindowId`) on niri, through
+/// its ScreenCast D-Bus API; Quickshell has no window capture there.
+pub const FEATURES: &[&str] = &["webengine", "screencopy-luminance", "toplevel-capture"];
 
 #[derive(Default)]
 pub struct QuickshellGlobalRust {}

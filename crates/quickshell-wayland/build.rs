@@ -31,6 +31,7 @@ fn protocols() -> PathBuf {
 fn main() {
     println!("cargo:rustc-link-lib=LayerShellQtInterface");
     println!("cargo:rustc-link-lib=wayland-client");
+    println!("cargo:rustc-link-lib=EGL");
     let protocols = protocols();
     // QtWaylandClient's shell integration API is private (as in upstream and LayerShellQt).
     let headers = PathBuf::from(qmake("QT_INSTALL_HEADERS"));
@@ -49,6 +50,7 @@ fn main() {
     .qt_module("Quick")
     .qt_module("Gui")
     .qt_module("WaylandClient")
+    .qt_module("OpenGL")
     .include_dir(&protocols);
     // SAFETY: only adds include paths and one C source file.
     let builder = unsafe {
@@ -65,7 +67,8 @@ fn main() {
         .cpp_file("include/sessionlock.h")
         .cpp_file("include/backgroundeffect.h")
         .cpp_file("include/screencopy.h")
-        .files(["src/idle.rs", "src/toplevel.rs", "src/screencopy.rs"])
+        .cpp_file("include/windowcast.h")
+        .files(["src/idle.rs", "src/toplevel.rs", "src/screencopy.rs", "src/windowcast.rs", "src/castffi.rs"])
         .build()
         .export();
 }

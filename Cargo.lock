@@ -1277,6 +1277,8 @@ dependencies = [
  "cxx-qt-build",
  "cxx-qt-lib",
  "libc",
+ "pipewire",
+ "qs_dbus",
  "qs_wayland",
  "quickshell",
 ]

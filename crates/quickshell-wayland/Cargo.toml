@@ -12,6 +12,8 @@ cxx-qt-lib.workspace = true
 libc = "0.2"
 quickshell = { path = "../quickshell" }
 qs_wayland = { path = "../qs-wayland" }
+qs_dbus = { path = "../qs-dbus" }
+pipewire = "0.10"
 
 [build-dependencies]
 cxx-qt-build.workspace = true

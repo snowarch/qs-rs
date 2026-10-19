@@ -5,6 +5,8 @@ extern crate quickshell;
 pub mod idle;
 pub mod screencopy;
 pub mod toplevel;
+pub mod castffi;
+pub mod windowcast;
 
 #[cfg(test)]
 mod link_init {
