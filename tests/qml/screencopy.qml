@@ -9,7 +9,7 @@ ShellRoot {
     ScreencopyView { id: view; captureSource: null; live: true; paintCursor: true; constraintSize: Qt.size(200, 100) }
     Component.onCompleted: {
         const ok = view.live && view.paintCursor && !view.hasContent && view.sourceSize.width === 0 && view.constraintSize.width === 200
-            && view.niriWindowId === -1 && Quickshell.hasVersion(0, 3, ["toplevel-capture"])
+            && view.niriWindowId === -1 && Quickshell.hasVersion(0, 3, ["toplevel-capture", "niri-window-capture"])
         if (!ok) console.log("FAILED")
         Qt.exit(ok ? 0 : 1)
     }

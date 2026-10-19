@@ -11,7 +11,7 @@ Item {
     property QtObject captureSource: null
     property bool paintCursor: false
     property bool live: false
-    // qs-rs only (hasVersion feature "toplevel-capture"): the niri window to record, exact where a
+    // qs-rs only (hasVersion feature "niri-window-capture"): the niri window to record, exact where a
     // Toplevel is matched by app id and title. -1 records captureSource.
     property int niriWindowId: -1
     readonly property bool hasContent: _isWindow ? _window.hasContent : _capture.hasContent
