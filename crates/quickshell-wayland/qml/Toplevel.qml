@@ -9,7 +9,9 @@ ToplevelBase {
     readonly property string title: _title
     readonly property bool activated: _activated
     readonly property Toplevel parent: _parent
-    readonly property list<QtObject> screens: _screens
+    // JS arrays, not list<QtObject>: a list property dies with its owner, and a JS value still holding the
+    // list (a model built from toplevels) segfaults Qt when read after the window closes.
+    readonly property var screens: _screens
 
     signal closed()
 
@@ -17,7 +19,7 @@ ToplevelBase {
     property string _title
     property bool _activated
     property Toplevel _parent: null
-    property list<QtObject> _screens
+    property var _screens: []
 
     function fullscreenOn(screen) { _qsFullscreenOn(screen?.name ?? "") }
     // Not implemented: inir never sets a minimize rectangle.

@@ -16,7 +16,8 @@ NotificationBase {
     property string summary
     property string body
     property int urgency: NotificationUrgency.Normal
-    property list<NotificationAction> actions
+    // A JS array, not list<NotificationAction>: see Toplevel.screens (a dismissed notification is destroyed).
+    property var actions: []
     property bool hasActionIcons
     property bool resident
     property string desktopEntry

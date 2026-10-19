@@ -20,9 +20,10 @@ QtObject {
     onWatchFilesChanged: if (QuickshellCore.watchFiles !== watchFiles) QuickshellCore.watchFiles = watchFiles
     property string clipboardText: QsClipboard.text
     onClipboardTextChanged: if (clipboardText !== QsClipboard.text) QsClipboard.text = clipboardText
-    readonly property list<QtObject> screens: _screens
+    // A JS array, not list<QtObject>: see Toplevel.screens (the old generation dies on every reload).
+    readonly property var screens: _screens
 
-    property list<QtObject> _screens
+    property var _screens: []
     property var _byName: ({})
     property Component _screenComponent: Component { ShellScreen {} }
 

@@ -8,9 +8,10 @@ QtObject {
     property string reloadableId
     default property Component delegate
     property var model: []
-    readonly property list<QtObject> instances: _instances
+    // A JS array, not list<QtObject>: see Toplevel.screens.
+    readonly property var instances: _instances
 
-    property list<QtObject> _instances
+    property var _instances: []
     property var _entries: []
     property bool _ready: false
 
