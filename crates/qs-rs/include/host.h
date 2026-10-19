@@ -37,16 +37,78 @@
 #include "quickshell/include/windowpool.h"
 #include "quickshell/include/reload.h"
 
+// QtQml's debugger helper (extern "C", exported): the JS/QML call stack of a V4 engine as text,
+// read from the engine's own frame chain, so JIT frames the native unwinder stops at still show.
+extern "C" char* qt_v4StackTraceForEngine(void* executionEngine);
+
 namespace qsrs {
-// Fatal signals print a native backtrace to stderr (the journal under inir.service), then
-// re-raise so the exit status and coredump stay the same. Cores of a 600 MB shell exceed
-// systemd-coredump's default size limits, so this is often the only trace of a live crash.
+/// The newest QML engine, whose JS stack a fatal signal prints.
+inline std::atomic<QJSEngine*> crash_engine {nullptr};
+
+/// One line per frame, `  #0 func  path:line`, from Qt's gdb/MI text
+/// (`frame={level="0",func="spin",file="...",line="8",...}`). Paths lose the runtime copy's
+/// prefix (`.../vfs/<hash>/qs/`), leaving the one inside the shell.
+inline void write_qml_stack(const char* mi) {
+	bool any = false;
+	auto field = [](const char* from, const char* end, const char* key, const char** start) -> size_t {
+		const char* at = strstr(from, key);
+		if (!at || at >= end) return 0;
+		*start = at + strlen(key);
+		const char* close = strchr(*start, '"');
+		return close && close < end ? size_t(close - *start) : 0;
+	};
+	for (const char* frame = strstr(mi, "frame={"); frame; frame = strstr(frame + 1, "frame={")) {
+		const char* end = strchr(frame, '}');
+		if (!end) break;
+		const char *level = "", *func = "", *file = "", *line = "";
+		size_t nl = field(frame, end, "level=\"", &level), nf = field(frame, end, "func=\"", &func);
+		size_t nfile = field(frame, end, "file=\"", &file), nline = field(frame, end, "line=\"", &line);
+		if (const char* vfs = strstr(file, "/vfs/"); vfs && vfs < file + nfile) {
+			if (const char* qs = strstr(vfs, "/qs/"); qs && qs < file + nfile) {
+				nfile -= size_t(qs + 4 - file);
+				file = qs + 4;
+			}
+		}
+		(void)!write(STDERR_FILENO, "  #", 3);
+		(void)!write(STDERR_FILENO, level, nl);
+		(void)!write(STDERR_FILENO, " ", 1);
+		(void)!write(STDERR_FILENO, func, nf);
+		(void)!write(STDERR_FILENO, "  ", 2);
+		(void)!write(STDERR_FILENO, file, nfile);
+		(void)!write(STDERR_FILENO, ":", 1);
+		(void)!write(STDERR_FILENO, line, nline);
+		(void)!write(STDERR_FILENO, "\n", 1);
+		any = true;
+	}
+	if (!any) {
+		static const char none[] = "  (none: the engine was not running JS)\n";
+		(void)!write(STDERR_FILENO, none, sizeof none - 1);
+	}
+}
+
+// Fatal signals print a native backtrace to stderr (the journal under inir.service), then the
+// QML engine's JS stack, then re-raise so the exit status and coredump stay the same. Cores of a
+// 600 MB shell exceed systemd-coredump's default size limits, so this is often the only trace of
+// a live crash. The JS stack allocates (not async-signal-safe), so it goes last and a second
+// fault while reading it just ends the process.
 inline void crash_handler(int sig) {
+	static volatile sig_atomic_t entered = 0;
+	if (entered) {
+		signal(sig, SIG_DFL);
+		raise(sig);
+		return;
+	}
+	entered = 1;
 	char head[64];
 	int n = snprintf(head, sizeof head, "qs-rs: fatal signal %d, backtrace:\n", sig);
 	if (n > 0) (void)!write(STDERR_FILENO, head, size_t(n));
 	void* frames[64];
 	backtrace_symbols_fd(frames, backtrace(frames, 64), STDERR_FILENO);
+	if (auto* engine = crash_engine.load(std::memory_order_acquire)) {
+		static const char qml[] = "qs-rs: QML stack (innermost first):\n";
+		(void)!write(STDERR_FILENO, qml, sizeof qml - 1);
+		if (char* trace = qt_v4StackTraceForEngine(engine->handle())) write_qml_stack(trace);
+	}
 	signal(sig, SIG_DFL);
 	raise(sig);
 }
@@ -364,6 +426,11 @@ inline QQmlEngine* new_engine(const QString& importPath) {
 	QObject::connect(engine, &QQmlEngine::exit, QCoreApplication::instance(), &QCoreApplication::exit, Qt::QueuedConnection);
 	schedule_census(engine);
 	schedule_reclaim(engine);
+	qsrs::crash_engine.store(engine, std::memory_order_release);
+	QObject::connect(engine, &QObject::destroyed, [engine] {
+		QJSEngine* expected = engine;
+		qsrs::crash_engine.compare_exchange_strong(expected, nullptr);
+	});
 	return engine;
 }
 
