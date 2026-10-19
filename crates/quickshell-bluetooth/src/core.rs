@@ -52,7 +52,7 @@ use core::pin::Pin;
 use cxx_qt::Threading;
 use cxx_qt_lib::{QString, QStringList};
 use qs_dbus::object_manager::{self, Event};
-use qs_dbus::{Bus, SetValue};
+use qs_dbus::{zbus, Bus, SetValue};
 
 const BLUEZ: &str = "org.bluez";
 
@@ -74,6 +74,12 @@ impl cxx_qt::Initialize for qobject::BluezCore {
                 Ok(c) => c,
                 Err(e) => return quickshell::qs_log!(warn, "quickshell.bluetooth", "no system bus: {e}"),
             };
+            // No D-Bus activation: without an adapter bluetooth.service fails on every start
+            // (ConditionPathIsDirectory=/sys/class/bluetooth), and upstream never starts it either.
+            // Unlike upstream, bluez showing up later (a dongle plugged in) still attaches.
+            if let Err(e) = wait_for_bluez(&conn).await {
+                return quickshell::qs_log!(warn, "quickshell.bluetooth", "{e}");
+            }
             let res = object_manager::run(&conn, BLUEZ, "/", |event| {
                 let _ = match event {
                     Event::InterfacesAdded(path, json) => qt.queue(move |this| this.interfaces_added(QString::from(&path), QString::from(&json))),
@@ -96,6 +102,23 @@ impl cxx_qt::Initialize for qobject::BluezCore {
             }
         });
     }
+}
+
+async fn wait_for_bluez(conn: &zbus::Connection) -> zbus::Result<()> {
+    // Subscribed before asking, so an owner arriving in between is not missed.
+    let mut owners = qs_dbus::name_owner_changes(conn, BLUEZ).await?;
+    let bus = zbus::Proxy::new(conn, "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus").await?;
+    let owned: bool = bus.call("NameHasOwner", &(BLUEZ,)).await?;
+    if owned {
+        return Ok(());
+    }
+    quickshell::qs_log!(debug, "quickshell.bluetooth", "BlueZ is not running; waiting for it.");
+    while let Some(msg) = qs_dbus::rt::next(&mut owners).await {
+        if qs_dbus::owner_change(&msg?).is_some_and(|(_, _, new)| !new.is_empty()) {
+            return Ok(());
+        }
+    }
+    Ok(())
 }
 
 impl qobject::BluezCore {
