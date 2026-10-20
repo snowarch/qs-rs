@@ -447,7 +447,10 @@ fn run_shell(cli: &cli::Cli, config: PathBuf, started: std::time::Instant) -> i3
         1
     } else {
         exit_daemon(0);
-        host::ffi::exec_app(app.pin_mut())
+        host::ffi::install_quit_signals();
+        let code = host::ffi::exec_app(app.pin_mut());
+        quickshell_wayland::windowcast::stop_all(std::time::Duration::from_millis(500));
+        code
     };
     if _vfs_lock.is_none() {
         let _ = std::fs::remove_dir_all(&vfs_root);

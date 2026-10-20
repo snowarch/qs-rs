@@ -24,6 +24,8 @@
 #include <csignal>
 #include <atomic>
 #include <execinfo.h>
+#include <fcntl.h>
+#include <QtCore/QSocketNotifier>
 #include <csetjmp>
 #include <cstring>
 #include <unistd.h>
@@ -183,6 +185,35 @@ inline void install_crash_handler() {
 	action.sa_flags = SA_NODEFER | SA_ONSTACK;
 	sigemptyset(&action.sa_mask);
 	for (int sig: {SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGABRT}) sigaction(sig, &action, nullptr);
+}
+
+// SIGTERM (systemd stopping or restarting inir) and SIGINT quit the event loop instead of
+// killing the process, so the shell's exit path runs (niri drops its window recordings). The
+// signal reaches the Qt thread through a pipe. A second signal, or an exit stuck for 3 s, ends
+// the process the default way.
+inline int quit_pipe[2] = {-1, -1};
+
+inline void quit_signal(int sig) {
+	signal(sig, SIG_DFL);
+	char byte = char(sig);
+	(void)!write(quit_pipe[1], &byte, 1);
+}
+
+inline void install_quit_signals() {
+	if (pipe2(quit_pipe, O_CLOEXEC | O_NONBLOCK) != 0) return;
+	auto* notifier = new QSocketNotifier(quit_pipe[0], QSocketNotifier::Read, QCoreApplication::instance());
+	QObject::connect(notifier, &QSocketNotifier::activated, notifier, [notifier] {
+		char byte = 0;
+		(void)!read(quit_pipe[0], &byte, 1);
+		notifier->setEnabled(false);
+		qInfo().noquote() << "Quitting on" << sigabbrev_np(byte);
+		alarm(3);
+		QCoreApplication::quit();
+	});
+	struct sigaction action {};
+	action.sa_handler = quit_signal;
+	sigemptyset(&action.sa_mask);
+	for (int sig: {SIGTERM, SIGINT}) sigaction(sig, &action, nullptr);
 }
 
 // QML debug/profiler server (qmlprofiler --attach, GammaRay, Qt Creator) on a TCP port.

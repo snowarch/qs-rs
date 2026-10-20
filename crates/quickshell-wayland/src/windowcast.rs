@@ -575,6 +575,30 @@ async fn stop(conn: &zbus::Connection, path: &str) {
     sessions::forget(path);
 }
 
+/// Stops every recording this process holds and waits for niri to confirm, at most `timeout`:
+/// the shell's last step on a normal exit (SIGTERM included), so niri drops the sessions now
+/// instead of on the next shell's first capture.
+pub fn stop_all(timeout: std::time::Duration) {
+    let open = sessions::open();
+    if open.is_empty() {
+        return;
+    }
+    let (done, wait) = std::sync::mpsc::channel();
+    let count = open.len();
+    qs_dbus::rt::spawn(async move {
+        if let Ok(conn) = qs_dbus::rt::session().await {
+            for path in &open {
+                stop(&conn, path).await;
+            }
+        }
+        let _ = done.send(());
+    });
+    match wait.recv_timeout(timeout) {
+        Ok(()) => quickshell::qs_log!(debug, LOG, "Stopped {count} window recordings on exit."),
+        Err(_) => quickshell::qs_log!(warn, LOG, "niri did not stop {count} window recordings in time; the next shell will."),
+    }
+}
+
 /// niri 26.04 keeps a session when its D-Bus client dies (Mutter stops it), so a killed shell
 /// would leave its recordings behind. Each process lists its sessions in
 /// `$XDG_RUNTIME_DIR/qs-rs/windowcast-<pid>`; the first recording of a new process stops the ones
@@ -609,6 +633,11 @@ mod sessions {
         let mut open = OPEN.lock().unwrap();
         open.retain(|p| p != path);
         write(&open);
+    }
+
+    /// This process's open sessions, still listed on disk until each one is stopped.
+    pub fn open() -> Vec<String> {
+        OPEN.lock().unwrap().clone()
     }
 
     /// Session paths left by processes that are gone; their lists are removed.
