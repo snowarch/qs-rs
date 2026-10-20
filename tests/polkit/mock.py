@@ -35,6 +35,10 @@ def identities(mode):
 class Authority(dbus.service.Object):
     @dbus.service.method(AUTH, in_signature="(sa{sv})ss", sender_keyword="sender")
     def RegisterAuthenticationAgent(self, subject, locale, path, sender=None):
+        # QSRS_MOCK_POLKIT_BUSY=N: another agent holds the session for the first N attempts.
+        state["attempts"] = state.get("attempts", 0) + 1
+        if state["attempts"] <= int(os.environ.get("QSRS_MOCK_POLKIT_BUSY", "0")):
+            raise dbus.exceptions.DBusException("An authentication agent already exists for the given subject", name="org.freedesktop.PolicyKit1.Error.Failed")
         agent.update(sender=sender, path=path)
         state["registered"].append({"kind": str(subject[0]), "session": str(subject[1].get("session-id", "")), "locale": str(locale), "path": str(path)})
 

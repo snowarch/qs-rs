@@ -184,6 +184,11 @@ impl qobject::PolkitAgentBase {
         if REGISTERED.load(Ordering::SeqCst) {
             self.as_mut().set_registered(true);
         }
+        // A nested test shell shares the system bus and the user's session with the real one: it
+        // must not take the session's polkit prompts where nobody can see them.
+        if std::env::var_os("QSRS_NO_POLKIT_AGENT").is_some() {
+            return;
+        }
         let path = self.path.to_string();
         SERVING.call_once(|| {
             rt::spawn(async move {
@@ -494,8 +499,25 @@ async fn register(conn: &zbus::Connection, path: &str) -> zbus::Result<Subject> 
     Ok(subject)
 }
 
+enum Change {
+    Owner(String),
+    Retry,
+}
+
+/// Retry delay while another agent holds the session (a nested test shell on the same system
+/// bus, or the previous shell still leaving): polkitd tells nobody when an agent goes away.
+const RETRY: std::time::Duration = std::time::Duration::from_secs(5);
+
+fn retry_later(tx: &rt::Sender<Change>) {
+    let tx = tx.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(RETRY);
+        tx.send(Change::Retry);
+    });
+}
+
 /// Serves the agent for the life of the process (generations attach to it), registering again
-/// whenever polkitd restarts.
+/// whenever polkitd restarts, and until it gets the session when another agent held it first.
 async fn serve(path: String) -> zbus::Result<()> {
     let conn = rt::system().await?;
     conn.object_server().at(path.as_str(), Agent).await?;
@@ -506,32 +528,60 @@ async fn serve(path: String) -> zbus::Result<()> {
             let _ = qt.queue(move |this| this.set_registered(ok));
         }
     };
-    let mut subject = match register(&conn, &path).await {
-        Ok(s) => {
-            set(true);
-            Some(s)
+    let (tx, mut changes) = rt::channel();
+    let owner_tx = tx.clone();
+    rt::spawn(async move {
+        while let Some(msg) = rt::next(&mut owners).await {
+            let Ok(msg) = msg else { continue };
+            if let Some((_, _, new_owner)) = qs_dbus::owner_change(&msg) {
+                owner_tx.send(Change::Owner(new_owner));
+            }
         }
-        Err(e) => {
-            quickshell::qs_log!(warn, LOG, "failed to register listener: {e}");
-            None
-        }
-    };
-    while let Some(msg) = rt::next(&mut owners).await {
-        let Ok(msg) = msg else { continue };
-        let Some((_, _, new_owner)) = qs_dbus::owner_change(&msg) else { continue };
-        set(false);
-        subject = None;
-        if new_owner.is_empty() {
-            continue;
+    });
+    let mut subject = None;
+    let mut waiting = false;
+    let mut pending = false;
+    let mut change = Some(Change::Retry);
+    while let Some(c) = change {
+        match c {
+            Change::Owner(new_owner) => {
+                set(false);
+                subject = None;
+                waiting = false;
+                if new_owner.is_empty() {
+                    change = changes.recv().await;
+                    continue;
+                }
+            }
+            Change::Retry => {
+                pending = false;
+                if subject.is_some() {
+                    change = changes.recv().await;
+                    continue;
+                }
+            }
         }
         match register(&conn, &path).await {
             Ok(s) => {
-                quickshell::qs_log!(info, LOG, "registered again after polkitd restarted");
+                if waiting {
+                    quickshell::qs_log!(info, LOG, "registered once the other agent left");
+                }
                 set(true);
                 subject = Some(s);
+                waiting = false;
             }
-            Err(e) => quickshell::qs_log!(warn, LOG, "failed to register listener: {e}"),
+            Err(e) => {
+                if !waiting {
+                    quickshell::qs_log!(warn, LOG, "failed to register listener: {e}; retrying every {} s", RETRY.as_secs());
+                }
+                waiting = true;
+                if !pending {
+                    pending = true;
+                    retry_later(&tx);
+                }
+            }
         }
+        change = changes.recv().await;
     }
     if let Some(subject) = subject {
         let authority = zbus::Proxy::new(&conn, POLKITD, AUTHORITY, AUTHORITY_IFACE).await?;
