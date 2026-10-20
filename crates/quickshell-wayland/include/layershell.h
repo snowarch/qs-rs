@@ -83,6 +83,7 @@ private:
 
 #include <LayerShellQt/Window>
 #include <QtGui/QWindow>
+#include <QtQuick/QQuickWindow>
 
 // Applies PanelWindow's layer surface configuration to its backing window through LayerShellQt.
 class QsLayerShell: public QObject {
@@ -103,5 +104,13 @@ public:
 		ls->setMargins(QMargins(left, top, right, bottom));
 		ls->setScope(scope);
 		ls->setActivateOnShow(keyboard != 0);
+		// Layer surface state is double-buffered: it applies on the surface's next commit, which
+		// only a new frame sends. A window that never redraws (inir's 1x1 reservations, whose
+		// exclusive zone follows the settings) kept its old zone until restart. Upstream sends the
+		// state from the polish before a frame; a frame is asked for here.
+		if (window->isVisible()) {
+			if (auto* quick = qobject_cast<QQuickWindow*>(window)) quick->update();
+			else window->requestUpdate();
+		}
 	}
 };
