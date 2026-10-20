@@ -2,6 +2,7 @@
 // `BackgroundEffect` attached type (upstream wayland/background_effect): asks the compositor to
 // blur what is behind a window through ext-background-effect-v1. The region is set in window
 // coordinates, scaled like the surface, and sent right before a frame so it commits with it.
+#include <QtCore/QHash>
 #include <QtCore/QObject>
 #include <QtCore/QPointer>
 #include <QtGui/QRegion>
@@ -48,6 +49,49 @@ inline Manager* manager() {
 	return manager;
 }
 
+// One effect object per wl_surface, ever: asking for a second one is a protocol error that
+// kills the connection (10-20 12:37, live: a reload whose old generation never let go of a
+// retaken window's effect). Every BackgroundEffect on a surface joins its list; the newest one
+// holds the object (sends its region, and destroys it when nobody is left). When the holder lets
+// go, the one before it takes the object back and sends its own region again.
+struct Effect {
+	ext_background_effect_surface_v1* object = nullptr;
+	QList<QObject*> holders;
+};
+
+inline QHash<wl_surface*, Effect>& effects() {
+	static QHash<wl_surface*, Effect> map;
+	return map;
+}
+
+inline ext_background_effect_surface_v1* take(Manager* manager, wl_surface* surface, QObject* holder) {
+	auto& e = effects()[surface];
+	if (e.object == nullptr) e.object = ext_background_effect_manager_v1_get_background_effect(manager->manager, surface);
+	e.holders.removeAll(holder);
+	e.holders.append(holder);
+	return e.object;
+}
+
+inline bool holds(wl_surface* surface, const QObject* holder) {
+	auto it = effects().constFind(surface);
+	return it != effects().constEnd() && !it->holders.isEmpty() && it->holders.last() == holder;
+}
+
+// `gone`: the wl_surface is going away, and its effect with it whoever holds it (an entry left
+// behind would hand a dead object to the next surface at the same address).
+inline void release(wl_surface* surface, QObject* holder, bool gone = false) {
+	auto it = effects().find(surface);
+	if (it == effects().end()) return;
+	bool held = !it->holders.isEmpty() && it->holders.last() == holder;
+	it->holders.removeAll(holder);
+	if (gone || it->holders.isEmpty()) {
+		ext_background_effect_surface_v1_destroy(it->object);
+		effects().erase(it);
+	} else if (held) {
+		QMetaObject::invokeMethod(it->holders.last(), "updateBlurRegion", Qt::QueuedConnection);
+	}
+}
+
 } // namespace qsbe
 
 class BackgroundEffect: public QObject {
@@ -79,8 +123,11 @@ public:
 		auto* window = this->proxy ? this->proxy->property("_backingWindow").value<QQuickWindow*>() : nullptr;
 		if (window == this->window) return;
 		if (this->window) {
+			this->destroySurface();
 			this->window->removeEventFilter(this);
 			QObject::disconnect(this->window, nullptr, this, nullptr);
+			if (this->waylandWindow) QObject::disconnect(this->waylandWindow, nullptr, this, nullptr);
+			this->waylandWindow = nullptr;
 		}
 		this->window = window;
 		if (window == nullptr) return;
@@ -92,7 +139,7 @@ public:
 	}
 
 	~BackgroundEffect() override {
-		if (this->surface) ext_background_effect_surface_v1_destroy(this->surface);
+		if (this->surface) qsbe::release(this->wlSurface, this);
 	}
 
 	[[nodiscard]] PendingRegion* blurRegion() const { return this->mBlurRegion; }
@@ -117,7 +164,7 @@ protected:
 		if (event->type() == QEvent::PlatformSurface) {
 			auto* surfaceEvent = static_cast<QPlatformSurfaceEvent*>(event);
 			if (surfaceEvent->surfaceEventType() == QPlatformSurfaceEvent::SurfaceAboutToBeDestroyed) {
-				this->destroySurface();
+				this->destroySurface(true);
 			}
 		} else if (event->type() == QEvent::Resize) {
 			this->updateBlurRegion();
@@ -132,8 +179,9 @@ private:
 		emit this->blurRegionChanged();
 	}
 
-	void updateBlurRegion() {
-		if (this->surface == nullptr || this->window == nullptr) return;
+	// Also called when the effect object comes back to this one (qsbe::release).
+	Q_INVOKABLE void updateBlurRegion() {
+		if (this->surface == nullptr || this->window == nullptr || !qsbe::holds(this->wlSurface, this)) return;
 		this->pending = true;
 		this->window->update();
 	}
@@ -143,6 +191,7 @@ private:
 	void onBeforeFrame() {
 		if (this->surface == nullptr || !this->pending) return;
 		this->pending = false;
+		if (!qsbe::holds(this->wlSurface, this)) return;
 		if (this->waylandWindow == nullptr || this->waylandWindow->wlSurface() == nullptr) return;
 		QRegion region;
 		if (this->mBlurRegion) {
@@ -169,7 +218,7 @@ private:
 		this->waylandWindow = ww;
 		if (ww == nullptr) return;
 		QObject::connect(ww, &QtWaylandClient::QWaylandWindow::surfaceCreated, this, &BackgroundEffect::onSurfaceCreated);
-		QObject::connect(ww, &QtWaylandClient::QWaylandWindow::surfaceDestroyed, this, &BackgroundEffect::destroySurface);
+		QObject::connect(ww, &QtWaylandClient::QWaylandWindow::surfaceDestroyed, this, [this] { this->destroySurface(true); });
 		if (ww->wlSurface() != nullptr) this->onSurfaceCreated();
 	}
 
@@ -183,16 +232,18 @@ private:
 			}
 			return;
 		}
-		if (this->surface == nullptr) {
-			this->surface = ext_background_effect_manager_v1_get_background_effect(manager->manager, this->waylandWindow->wlSurface());
-		}
+		auto* wl = this->waylandWindow->wlSurface();
+		if (this->surface && this->wlSurface != wl) qsbe::release(this->wlSurface, this);
+		this->wlSurface = wl;
+		this->surface = qsbe::take(manager, wl, this);
 		this->pending = this->mBlurRegion != nullptr;
 		if (this->pending) this->window->update();
 	}
 
-	void destroySurface() {
-		if (this->surface) ext_background_effect_surface_v1_destroy(this->surface);
+	void destroySurface(bool gone = false) {
+		if (this->surface) qsbe::release(this->wlSurface, this, gone);
 		this->surface = nullptr;
+		this->wlSurface = nullptr;
 		this->pending = false;
 		if (this->proxy == nullptr) this->deleteLater();
 	}
@@ -211,5 +262,6 @@ private:
 	QPointer<QtWaylandClient::QWaylandWindow> waylandWindow;
 	PendingRegion* mBlurRegion = nullptr;
 	ext_background_effect_surface_v1* surface = nullptr;
+	wl_surface* wlSurface = nullptr;
 	bool pending = false;
 };
