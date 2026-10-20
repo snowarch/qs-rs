@@ -2,8 +2,8 @@ import QtQuick
 import Quickshell
 
 // SpringValue against what IrisSpring promises: settles exactly on `to`, bounces only with
-// bounce, keeps its velocity on a retarget, runs a curve in its own time and adds a second one
-// on top, jump() and animate: false land at once, minimum holds, and recede is used going down.
+// bounce, keeps its velocity on a retarget, runs a curve in its own time and chases a retarget
+// mid-curve with a spring, jump() and animate: false land at once, minimum holds, and recede is used going down.
 ShellRoot {
     id: root
     property var samples: []
@@ -35,9 +35,9 @@ ShellRoot {
         function() { go(1) },
         function() { s.emerge = { response: 400, bounce: 0 }; s.recede = null; s.animate = false; s.to = 0; s.animate = true; go(1); later(120, function() { root.retargetAt = s.value; root.retargetN = root.samples.length; s.to = 0 }) },
         function() { s.emerge = { response: 200, bounce: 0, curve: [0.3, 0, 0.2, 1] }; s.recede = null; go(1) },
-        function() { go(2); later(90, function() { s.to = 3 }) },
-        function() { s.emerge = { response: 500, bounce: 0 }; go(0); later(60, function() { s.jump() }) },
-        function() { s.minimum = 0; s.emerge = { response: 300, bounce: 0.7 }; s.recede = { response: 300, bounce: 0.7 }; go(1); }
+        function() { s.emerge = { response: 300, bounce: 0, curve: [0.05, 0.7, 0.1, 1] }; go(2); later(90, function() { root.retargetAt = s.value; root.retargetN = root.samples.length; s.to = 0 }) },
+        function() { s.emerge = { response: 500, bounce: 0 }; go(1); later(60, function() { s.jump() }) },
+        function() { s.minimum = 0; s.emerge = { response: 300, bounce: 0.7 }; s.recede = { response: 300, bounce: 0.7 }; go(2); }
     ]
     property real retargetAt: 0
     property int retargetN: 0
@@ -72,12 +72,15 @@ ShellRoot {
             check(s.value === 1, "curve lands on to")
             check(last.t >= 180 && last.t < 300, "200 ms curve ends at " + last.t + " ms")
         } else if (n === 5) {
-            check(s.value === 3, "added curve lands on the last to")
+            check(s.value === 0, "the chase lands on the last to")
+            const after = samples[root.retargetN]
+            // A segment stacked on the old one starts at the curve's own speed, -2 * 14 / 0.3 s.
+            check(after && after.vel > -40, "a curve turned around does not reverse at once (velocity " + (after ? after.vel.toFixed(1) : "none") + "/s)")
             let jump = 0
             for (let i = 1; i < samples.length; i++) jump = Math.max(jump, Math.abs(samples[i].v - samples[i - 1].v))
-            check(jump < 0.5, "two curves add without a jump (largest step " + jump.toFixed(3) + ")")
+            check(jump < 0.5, "a retarget mid-curve is chased without a jump (largest step " + jump.toFixed(3) + ")")
         } else if (n === 6) {
-            check(s.value === 0 && s.velocity === 0 && last.t < 200, "jump() lands at once")
+            check(s.value === 1 && s.velocity === 0 && last.t < 200, "jump() lands at once")
         } else if (n === 7) {
             go(0)
             root.stage = 8

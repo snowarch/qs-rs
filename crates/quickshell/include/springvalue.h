@@ -12,8 +12,8 @@
 //
 // What it keeps from IrisSpring, on purpose: the first step is at most one frame from the kick, a
 // step is at most 34 ms, a retarget keeps the velocity, a spring whose parameters carry a cubic
-// curve moves as additive bezier segments (each retarget adds one), and rest is |x| < epsilon
-// with |v| < 12 epsilon. One change: emerge or recede is picked once per kick (to >= value), not
+// curve moves along it, a curve retargeted mid-flight is chased by a critically damped spring
+// from the speed it had (its response), and rest is |x| < epsilon with |v| < 12 epsilon. One change: emerge or recede is picked once per kick (to >= value), not
 // every tick, so an overshoot does not switch to the other spring halfway through a movement.
 #include <QtCore/QAbstractAnimation>
 #include <QtCore/QList>
@@ -102,6 +102,7 @@ public:
 		bool was = this->isRunning();
 		this->ticker.stop();
 		this->segments.clear();
+		this->chase = 0;
 		this->setVelocity(0);
 		this->target = this->mTo;
 		this->setValue(this->mTo);
@@ -185,7 +186,11 @@ private:
 		if (std::abs(this->mValue - this->mTo) < this->mEpsilon
 		    && std::abs(this->mVelocity) < this->mEpsilon * 12)
 			return this->jump();
-		if (!p.curve.isEmpty()) {
+		if (!p.curve.isEmpty() && this->isRunning() && (!this->segments.isEmpty() || this->chase > 0)) {
+			// A new segment on top of the old one turned the speed around in one frame.
+			this->segments.clear();
+			this->chase = p.response;
+		} else if (!p.curve.isEmpty()) {
 			double delta = this->mTo - (this->segments.isEmpty() ? this->mValue : this->target);
 			if (std::abs(delta) >= this->mEpsilon) this->segments.append({delta, 0, p.response, p.curve});
 		} else {
@@ -219,7 +224,7 @@ private:
 		const Params& p = this->active;
 		if (p.response <= 0) return this->jump();
 
-		if (!this->segments.isEmpty() || !p.curve.isEmpty()) {
+		if (this->chase <= 0 && (!this->segments.isEmpty() || !p.curve.isEmpty())) {
 			double offset = 0;
 			for (auto it = this->segments.begin(); it != this->segments.end();) {
 				it->age += dt * 1000;
@@ -241,8 +246,8 @@ private:
 			this->setValue(this->mTo - offset);
 		}
 
-		double w = 2 * M_PI / (p.response / 1000);
-		double zeta = 1 - p.bounce;
+		double w = 2 * M_PI / ((this->chase > 0 ? this->chase : p.response) / 1000);
+		double zeta = this->chase > 0 ? 1 : 1 - p.bounce;
 		double x0 = this->mValue - this->mTo;
 		double v0 = this->mVelocity;
 		double x, v;
@@ -282,6 +287,7 @@ private:
 	QJSValue mRecede;
 	Params active;
 	double target = 0;
+	double chase = 0;
 	QList<Segment> segments;
 	qint64 lastNs = 0;
 	qint64 kickNs = 0;
