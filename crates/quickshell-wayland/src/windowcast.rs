@@ -184,6 +184,14 @@ pub unsafe fn cast_take(frames: usize, out: &mut CastFrame) -> bool {
     for i in 0..planes.count as usize {
         // Duplicated under the lock: PipeWire closes its fds after remove_buffer, which takes it.
         out.fds[i] = unsafe { libc::fcntl(planes.fds[i], libc::F_DUPFD_CLOEXEC, 0) };
+        if out.fds[i] < 0 {
+            // Out of descriptors: no frame rather than one imported from fd -1.
+            for fd in &out.fds[..i] {
+                unsafe { libc::close(*fd) };
+            }
+            send(Cmd::Release(key >> KEY_SHIFT, key));
+            return false;
+        }
         out.offsets[i] = planes.offsets[i];
         out.strides[i] = planes.strides[i];
     }
@@ -721,7 +729,14 @@ async fn start(session: Arc<Session>, target: Target, cursor: u32, frames: Arc<F
         .build();
     let mut added = qs_dbus::signals(&conn, rule).await?;
     sp.call::<_, _, ()>("Start", &()).await?;
-    let Some(Ok(msg)) = qs_dbus::rt::next(&mut added).await else { return Ok(()) };
+    let Some(Ok(msg)) = qs_dbus::rt::next(&mut added).await else {
+        // No stream ever came: the session would sit in niri until the view went away.
+        let path = session.path.lock().unwrap().take();
+        if let Some(path) = path {
+            stop(&conn, path.as_str()).await;
+        }
+        return Ok(());
+    };
     let (node,): (u32,) = msg.body().deserialize()?;
     if !session.dead.load(Ordering::Acquire) {
         send(Cmd::Open { id: session.id, node, frames, live: session.live.clone() });
