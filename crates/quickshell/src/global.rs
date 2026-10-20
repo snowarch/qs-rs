@@ -98,7 +98,7 @@ pub const COMPAT_VERSION: (i32, i32) = (0, 3);
 /// "toplevel-capture": ScreencopyView records a Toplevel on niri, through its ScreenCast D-Bus API;
 /// Quickshell has no window capture there. "niri-window-capture": ScreencopyView.niriWindowId, a
 /// qs-rs property (a file that sets it fails to load anywhere else, so it gets its own name).
-pub const FEATURES: &[&str] = &["webengine", "screencopy-luminance", "toplevel-capture", "niri-window-capture"];
+pub const FEATURES: &[&str] = &["webengine", "screencopy-luminance", "toplevel-capture", "niri-window-capture", "native-spring"];
 
 #[derive(Default)]
 pub struct QuickshellGlobalRust {}
