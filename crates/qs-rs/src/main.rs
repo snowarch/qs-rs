@@ -448,6 +448,7 @@ fn run_shell(cli: &cli::Cli, config: PathBuf, started: std::time::Instant) -> i3
     } else {
         exit_daemon(0);
         host::ffi::install_quit_signals();
+        host::ffi::watch_memory_peaks();
         let code = host::ffi::exec_app(app.pin_mut());
         quickshell_wayland::windowcast::stop_all(std::time::Duration::from_millis(500));
         code

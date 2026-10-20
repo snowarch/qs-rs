@@ -26,6 +26,7 @@
 #include <execinfo.h>
 #include <fcntl.h>
 #include <QtCore/QSocketNotifier>
+#include <QtCore/QDateTime>
 #include <csetjmp>
 #include <cstring>
 #include <unistd.h>
@@ -481,6 +482,122 @@ private:
 	QTimer late;
 };
 
+// Where the memory peak happened (AU-F4: 890 MB once against 365 at rest, and the journal had
+// rotated it away). The kernel keeps the process maximum (VmHWM); it is read for 10 s after
+// each window shows or hides and each reload, and every 30 s otherwise. Each time it rises by
+// 32 MB the shell logs it with the visible windows and the last events, and appends the line
+// to $XDG_STATE_HOME/qs-rs/memory-peaks (kept under 64 KB). The startup peak is one line.
+class PeakWatcher: public QObject {
+public:
+	static PeakWatcher* instance;
+
+	PeakWatcher(): QObject(QCoreApplication::instance()) {
+		this->started.start();
+		this->burst.setInterval(250);
+		QObject::connect(&this->burst, &QTimer::timeout, this, [this] {
+			this->sample();
+			if (--this->burstLeft <= 0) this->burst.stop();
+		});
+		this->slow.setInterval(30000);
+		QObject::connect(&this->slow, &QTimer::timeout, this, [this] { this->sample(); });
+		this->slow.start();
+		QTimer::singleShot(5100, this, [this] { this->sample(); });
+		qApp->installEventFilter(this);
+	}
+
+	// The file that declares the window's Quickshell object (the backing QQuickWindow has no
+	// QML context of its own); a window frozen across a reload says so.
+	static QString name(QObject* window) {
+		auto* proxy = window->property("_qsWindow").value<QObject*>();
+		auto* ctx = qmlContext(proxy ? proxy : window);
+		auto out = ctx ? ctx->baseUrl().fileName() : QString(window->metaObject()->className());
+		if (proxy && !proxy->objectName().isEmpty()) out += "#" + proxy->objectName();
+		if (window->property("_qsFrozen").toBool()) out += " (frozen)";
+		return out;
+	}
+
+	void note(const QString& event) {
+		this->events.append({this->started.elapsed(), event});
+		if (this->events.size() > 8) this->events.removeFirst();
+		this->burstLeft = 40;
+		if (!this->burst.isActive()) this->burst.start();
+	}
+
+protected:
+	bool eventFilter(QObject* o, QEvent* e) override {
+		if ((e->type() == QEvent::Show || e->type() == QEvent::Hide) && o->isWindowType()) {
+			this->note(QString(e->type() == QEvent::Show ? "show " : "hide ") + name(o));
+		}
+		return false;
+	}
+
+private:
+	static void read(long& rssMb, long& hwmMb) {
+		rssMb = hwmMb = 0;
+		FILE* f = fopen("/proc/self/status", "r");
+		if (!f) return;
+		char line[128];
+		while (fgets(line, sizeof line, f)) {
+			if (!strncmp(line, "VmHWM:", 6)) hwmMb = atol(line + 6) >> 10;
+			else if (!strncmp(line, "VmRSS:", 6)) rssMb = atol(line + 6) >> 10;
+		}
+		fclose(f);
+	}
+
+	void sample() {
+		long rss = 0, hwm = 0;
+		read(rss, hwm);
+		bool settled = this->started.elapsed() > 5000;
+		if (!settled) return;
+		if (this->logged == 0) {
+			this->logged = hwm;
+			this->report(QString("startup peak %1 MB, now %2 MB").arg(hwm).arg(rss));
+			return;
+		}
+		if (hwm < this->logged + 32) return;
+		this->logged = hwm;
+		this->report(QString("new peak %1 MB, now %2 MB").arg(hwm).arg(rss));
+	}
+
+	void report(const QString& head) {
+		QStringList visible;
+		for (auto* w: QGuiApplication::allWindows()) {
+			if (w->isVisible()) visible << name(w);
+		}
+		visible.sort();
+		QStringList recent;
+		auto now = this->started.elapsed();
+		for (auto& [at, what]: this->events) recent << QString("%1 (%2 s ago)").arg(what).arg((now - at) / 1000.0, 0, 'f', 1);
+		auto line = QString("Memory: %1; visible: %2; last events: %3")
+		                .arg(head, visible.isEmpty() ? "none" : visible.join(", "), recent.isEmpty() ? "none" : recent.join(", "));
+		qInfo().noquote() << line;
+		auto dir = qEnvironmentVariable("XDG_STATE_HOME", QDir::homePath() + "/.local/state") + "/qs-rs";
+		QDir().mkpath(dir);
+		QFile file(dir + "/memory-peaks");
+		if (file.size() > 64 * 1024 && file.open(QIODevice::ReadOnly)) {
+			auto keep = file.readAll().right(32 * 1024);
+			file.close();
+			if (file.open(QIODevice::WriteOnly | QIODevice::Truncate)) file.write(keep.mid(keep.indexOf('\n') + 1));
+			file.close();
+		}
+		if (file.open(QIODevice::Append)) {
+			file.write((QDateTime::currentDateTime().toString(Qt::ISODate) + " pid " + QString::number(getpid()) + " " + line + "\n").toUtf8());
+		}
+	}
+
+	QElapsedTimer started;
+	QTimer burst;
+	QTimer slow;
+	int burstLeft = 0;
+	long logged = 0;
+	QList<QPair<qint64, QString>> events;
+};
+inline PeakWatcher* PeakWatcher::instance = nullptr;
+
+inline void watch_memory_peaks() {
+	if (PeakWatcher::instance == nullptr) PeakWatcher::instance = new PeakWatcher();
+}
+
 inline void schedule_reclaim(QQmlEngine* engine) {
 	if (qEnvironmentVariableIntValue("QSRS_NO_RECLAIM") == 1) return;
 	new ReclaimWatcher(engine);
@@ -592,6 +709,7 @@ private:
 			return;
 		}
 		qInfo() << "Reloading configuration...";
+		if (PeakWatcher::instance != nullptr) PeakWatcher::instance->note("reload");
 		auto* next = new_engine(this->importPath);
 		auto* component = new QQmlComponent(next, QUrl::fromLocalFile(this->entry), QQmlComponent::PreferSynchronous);
 		if (component->isError()) {

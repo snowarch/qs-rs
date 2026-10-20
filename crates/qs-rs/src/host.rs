@@ -16,6 +16,7 @@ pub mod ffi {
         fn install_message_handler();
         fn install_crash_handler();
         fn install_quit_signals();
+        fn watch_memory_peaks();
         fn start_qml_debug_server(port: i32, block: bool) -> bool;
         fn qt_build_version() -> String;
         fn qt_plugins_path() -> String;
