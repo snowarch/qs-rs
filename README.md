@@ -11,8 +11,8 @@ inir doesn't notice the swap. It just gets lighter.
 > up on screen and doesn't read the code. That makes qs-rs an experiment too: how far an AI can
 > take a project like this almost on its own.
 >
-> So far: 22 sessions over 48 hours, 2,857 model calls, 2.5M tokens written and 577M read
-> (almost all of it cache: every call re-reads the session so far).
+> Through 2026-10-19: 32 sessions over four days, 3,564 model calls, 3.1M tokens written and 715M
+> read (almost all of it cache: every call re-reads the session so far).
 >
 > The development rules, plans and agent instructions behind it stay on the maintainer's machine
 > and are never published. That is on purpose.
@@ -90,6 +90,14 @@ Same A/B, same machine. CPU is shown against Quickshell in that run, since it dr
   `updatesEnabled`, and WebEngine: inir's sidebar web apps run here, which stock Quickshell can't do.
   Screen capture too: inir's anti-flashbang now reads the screen in 8 ms instead of 328 ms of
   `grim | magick`, so it dims before the flash instead of after.
+- **2026-10-19:** live window capture on niri (dmabuf, zero-copy), the QML stack on fatal signals,
+  object lists that outlive their owners as JS arrays (a game closing dozens of windows used to
+  take the shell down with it).
+- **2026-10-20:** reloads in a row no longer crash (no JS runs while the old generation comes
+  apart, like upstream), SIGTERM quits cleanly, tray entries an app takes back go inert instead of
+  dying under a click, and every new memory peak is logged with the windows that were open. Two
+  things inir changes live now land live: a reserved screen edge (a layer surface that never
+  redraws) and a new video wallpaper (`Process` starts on the spot again, like upstream).
 
 </details>
 
@@ -105,12 +113,20 @@ inir runs on it as a full daily session, all three families (ii, Waffle, iRiS).
 | Wayland: layer shell, session lock, toplevels, idle monitor, clipboard | done |
 | services: PipeWire, MPRIS, UPower, Bluetooth, NetworkManager, notifications, tray, Polkit, PAM | done |
 | Hyprland | IPC done; shortcuts and focus grab inert (unused on niri) |
-| `ScreencopyView` | screens done (wlr-screencopy, shared memory); windows need a protocol niri 26.04 lacks |
+| `ScreencopyView` | screens done (wlr-screencopy, shared memory); live windows on niri, zero-copy (see below) |
 | `IdleInhibitor`, `DataStream`, `SocketServer`, widget wrappers | missing; inir doesn't use them |
 | I3/Sway, Greetd, X11 | out of scope |
 
 Left that inir actually touches: its region selector and recorder still shell out to `grim`,
-and captures still go through the CPU (zero-copy dmabuf frames are next).
+and screen captures still go through the CPU (window captures already don't).
+
+Window previews are live, not screenshots: `ScreencopyView { niriWindowId: id }` (or a Toplevel)
+asks niri's ScreenCast for that one window and draws the PipeWire dmabuf frames as GPU textures,
+no copy on the way. niri keeps a recording whose client died, so qs-rs stops its own on exit and
+sweeps what a killed shell left behind.
+
+When it does crash, it says where: a fatal signal prints the native backtrace and then the QML
+stack of every engine, `file.qml:line` included, even halfway through a reload.
 
 ## Finding what breaks
 
