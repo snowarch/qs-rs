@@ -115,4 +115,11 @@ public:
 			else window->requestUpdate();
 		}
 	}
+
+	// The output is fixed when the surface is created. LayerShellQt reads it from QWindow::screen,
+	// which a window created before its screen was set does not carry to the surface: every
+	// per-screen panel landed on the first output. Handed over explicitly right before a show.
+	Q_INVOKABLE void setOutput(QWindow* window) {
+		if (window) LayerShellQt::Window::get(window)->setScreen(window->screen());
+	}
 };

@@ -60,6 +60,7 @@ ProxyWindowBase {
     property bool _configured: false
     _ready: _configured
     on_WindowChanged: if (_window) { _configure(); _configured = true }
+    on_AboutToShow: QsLayerShell.setOutput(_window)
     // A reused surface keeps its layer and namespace: only a window with the same ones is taken.
     _reuseTag: "panel:" + _layer + ":" + _namespace
 

@@ -14,7 +14,7 @@ exec env -i PATH="$PATH" LANG="${LANG:-C.UTF-8}" HOME="$ROOT/home" XDG_RUNTIME_D
   XDG_DATA_DIRS=/usr/local/share:/usr/share XDG_CONFIG_DIRS=/etc/xdg \
   KWIN_SCREENSHOT_NO_PERMISSION_CHECKS=1 QSRS_OUT="$QSRS_OUT" QSRS_DELAY="$DELAY" ${QSRS_EXTRA_ENV:-} \
   dbus-run-session -- sh -c '
-    kwin_wayland --virtual --width '"$W"' --height '"$H"' --socket wl-qsrs --no-lockscreen >"$XDG_RUNTIME_DIR/kwin.log" 2>&1 &
+    kwin_wayland --virtual --output-count '"${QSRS_NEST_OUTPUTS:-1}"' --width '"$W"' --height '"$H"' --socket wl-qsrs --no-lockscreen >"$XDG_RUNTIME_DIR/kwin.log" 2>&1 &
     KWIN=$!
     for i in $(seq 50); do [ -S "$XDG_RUNTIME_DIR/wl-qsrs" ] && break; sleep 0.1; done
     export WAYLAND_DISPLAY=wl-qsrs QT_QPA_PLATFORM=wayland QT_FORCE_STDERR_LOGGING=1
