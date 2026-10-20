@@ -24,6 +24,8 @@
 #include <csignal>
 #include <atomic>
 #include <execinfo.h>
+#include <csetjmp>
+#include <cstring>
 #include <unistd.h>
 #include <QtQuick/QQuickItem>
 #include <QtQuick/QQuickWindow>
@@ -42,8 +44,24 @@
 extern "C" char* qt_v4StackTraceForEngine(void* executionEngine);
 
 namespace qsrs {
-/// The newest QML engine, whose JS stack a fatal signal prints.
-inline std::atomic<QJSEngine*> crash_engine {nullptr};
+/// The V4 engines of the live QML engines (the running generation and, during a reload, the
+/// one being torn down), whose JS stacks a fatal signal prints. Fixed slots: the handler reads
+/// them without locks.
+inline std::atomic<void*> crash_engines[4] {};
+
+inline void crash_engine_add(void* v4) {
+	for (auto& slot: crash_engines) {
+		void* empty = nullptr;
+		if (slot.compare_exchange_strong(empty, v4)) return;
+	}
+}
+
+inline void crash_engine_remove(void* v4) {
+	for (auto& slot: crash_engines) {
+		void* expected = v4;
+		slot.compare_exchange_strong(expected, nullptr);
+	}
+}
 
 /// One line per frame, `  #0 func  path:line`, from Qt's gdb/MI text
 /// (`frame={level="0",func="spin",file="...",line="8",...}`). Paths lose the runtime copy's
@@ -81,19 +99,55 @@ inline void write_qml_stack(const char* mi) {
 		any = true;
 	}
 	if (!any) {
-		static const char none[] = "  (none: the engine was not running JS)\n";
+		static const char none[] = "  (no frames)\n";
 		(void)!write(STDERR_FILENO, none, sizeof none - 1);
 	}
 }
 
+inline void write_str(const char* text) { (void)!write(STDERR_FILENO, text, strlen(text)); }
+
+// Set while the handler reads a JS stack: a fault or a hang in there (an engine half torn
+// down, a heap lock held by the crashing code) jumps back out instead of killing or freezing
+// the process before it can restart.
+inline sigjmp_buf crash_walk_jump;
+inline volatile sig_atomic_t crash_walking = 0;
+
+// The JS stacks of every engine that is running JS. qt_v4StackTraceForEngine reads the
+// engine's current frame without checking for one, so an idle engine is skipped first:
+// EngineBase starts with `CppStackFrame* currentStackFrame` (qv4enginebase_p.h).
+inline void write_qml_stacks() {
+	for (auto& slot: crash_engines) {
+		void* v4 = slot.load(std::memory_order_acquire);
+		if (v4 == nullptr) continue;
+		if (sigsetjmp(crash_walk_jump, 1) != 0) {
+			crash_walking = 0;
+			alarm(0);
+			write_str("  (unreadable: the engine faulted or hung while reading it)\n");
+			continue;
+		}
+		crash_walking = 1;
+		alarm(2);
+		void* frame = *static_cast<void* volatile*>(v4);
+		if (frame == nullptr) {
+			write_str("  (engine not running JS)\n");
+		} else if (char* trace = qt_v4StackTraceForEngine(v4)) {
+			write_qml_stack(trace);
+		}
+		alarm(0);
+		crash_walking = 0;
+	}
+}
+
 // Fatal signals print a native backtrace to stderr (the journal under inir.service), then the
-// QML engine's JS stack, then re-raise so the exit status and coredump stay the same. Cores of a
-// 600 MB shell exceed systemd-coredump's default size limits, so this is often the only trace of
-// a live crash. The JS stack allocates (not async-signal-safe), so it goes last and a second
-// fault while reading it just ends the process.
+// QML engines' JS stacks, then re-raise so the exit status and coredump stay the same. Cores of
+// a 600 MB shell exceed systemd-coredump's default size limits, so this is often the only trace
+// of a live crash. Reading a JS stack is not async-signal-safe, so it goes last and runs under
+// crash_walking: the handler is not deferred while it runs, so a second fault lands here again
+// and jumps out, and SIGALRM ends a walk that blocks.
 inline void crash_handler(int sig) {
+	if (crash_walking) siglongjmp(crash_walk_jump, 1);
 	static volatile sig_atomic_t entered = 0;
-	if (entered) {
+	if (entered || sig == SIGALRM) {
 		signal(sig, SIG_DFL);
 		raise(sig);
 		return;
@@ -104,11 +158,12 @@ inline void crash_handler(int sig) {
 	if (n > 0) (void)!write(STDERR_FILENO, head, size_t(n));
 	void* frames[64];
 	backtrace_symbols_fd(frames, backtrace(frames, 64), STDERR_FILENO);
-	if (auto* engine = crash_engine.load(std::memory_order_acquire)) {
-		static const char qml[] = "qs-rs: QML stack (innermost first):\n";
-		(void)!write(STDERR_FILENO, qml, sizeof qml - 1);
-		if (char* trace = qt_v4StackTraceForEngine(engine->handle())) write_qml_stack(trace);
-	}
+	write_str("qs-rs: QML stack (innermost first):\n");
+	struct sigaction alarm_action {};
+	alarm_action.sa_handler = crash_handler;
+	alarm_action.sa_flags = SA_NODEFER | SA_ONSTACK;
+	sigaction(SIGALRM, &alarm_action, nullptr);
+	write_qml_stacks();
 	signal(sig, SIG_DFL);
 	raise(sig);
 }
@@ -117,7 +172,17 @@ inline void install_crash_handler() {
 	// backtrace() loads libgcc lazily: do it now, not inside the handler.
 	void* warm[1];
 	backtrace(warm, 1);
-	for (int sig: {SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGABRT}) signal(sig, crash_handler);
+	// A blown native stack (deep recursion) would leave the handler no room to run.
+	static char alt[256 * 1024];
+	stack_t stack {};
+	stack.ss_sp = alt;
+	stack.ss_size = sizeof alt;
+	sigaltstack(&stack, nullptr);
+	struct sigaction action {};
+	action.sa_handler = crash_handler;
+	action.sa_flags = SA_NODEFER | SA_ONSTACK;
+	sigemptyset(&action.sa_mask);
+	for (int sig: {SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGABRT}) sigaction(sig, &action, nullptr);
 }
 
 // QML debug/profiler server (qmlprofiler --attach, GammaRay, Qt Creator) on a TCP port.
@@ -426,11 +491,10 @@ inline QQmlEngine* new_engine(const QString& importPath) {
 	QObject::connect(engine, &QQmlEngine::exit, QCoreApplication::instance(), &QCoreApplication::exit, Qt::QueuedConnection);
 	schedule_census(engine);
 	schedule_reclaim(engine);
-	qsrs::crash_engine.store(engine, std::memory_order_release);
-	QObject::connect(engine, &QObject::destroyed, [engine] {
-		QJSEngine* expected = engine;
-		qsrs::crash_engine.compare_exchange_strong(expected, nullptr);
-	});
+	// Registered until the QObject goes, after the V4 engine: a crash while it is torn down
+	// still names the JS that ran, and a read past its end is caught by the handler.
+	qsrs::crash_engine_add(engine->handle());
+	QObject::connect(engine, &QObject::destroyed, [v4 = engine->handle()] { qsrs::crash_engine_remove(v4); });
 	return engine;
 }
 
