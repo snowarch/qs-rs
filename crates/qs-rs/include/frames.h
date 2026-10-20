@@ -360,6 +360,10 @@ private:
 		// compositor really calls back at when that is faster (a refresh rate reported low, a
 		// test without vblank). A late frame says nothing about the next one.
 		auto period = window_period_ns(w);
+		// The compositor calling back slower than the screen refreshes (a nested one with two
+		// windows animating halves it) would slow every animation and every QML Timer with it:
+		// they run on this driver. The timer then keeps the refresh between frames.
+		this->slowFrames = f.interval > period * 3 / 2;
 		if (f.interval > 0 && f.interval < period) period = f.interval;
 		auto target = std::max(f.start ? f.start + period : 0, fc::now_ns());
 		// Another window's frame of the same refresh already stepped to this vblank.
@@ -381,7 +385,7 @@ private:
 		this->advance();
 		auto end = fc::now_ns();
 		FrameMeter::get()->noteTick(begin, end);
-		if (this->isRunning()) this->rearm(fromFrame ? fc::period_ns * 3 / 2 : fc::period_ns);
+		if (this->isRunning()) this->rearm(fromFrame && !this->slowFrames ? fc::period_ns * 3 / 2 : fc::period_ns);
 	}
 
 	void rearm(qint64 ns) {
@@ -396,6 +400,7 @@ private:
 	QHash<QQuickWindow*, Frame> frames;
 	qint64 origin = 0;
 	bool queued = false;
+	bool slowFrames = false;
 };
 
 // `qs frames ...` arrives on an IPC connection thread.
