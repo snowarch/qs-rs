@@ -676,11 +676,20 @@ private:
 		// QSRS_TEST_TEARDOWN_JS keeps the old bug, for tests/crashstack to crash mid-reload.
 		static const bool keepJs = qEnvironmentVariableIsSet("QSRS_TEST_TEARDOWN_JS");
 		if (!keepJs) this->engine->setInterrupted(true);
+		// With JS interrupted, every binding the teardown wakes evaluates to undefined and Qt warns
+		// "Unable to assign [undefined]" for each (hundreds per reload in inir): noise about objects
+		// already on their way out. Only that line is dropped, and only while the old engine dies.
+		static QtMessageHandler forward = nullptr;
+		forward = qInstallMessageHandler([](QtMsgType type, const QMessageLogContext& context, const QString& msg) {
+			if (type == QtWarningMsg && msg.contains(QLatin1String("Unable to assign [undefined]"))) return;
+			if (forward) forward(type, context, msg);
+		});
 		delete this->root;
 		this->root = nullptr;
 		QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
 		this->engine->collectGarbage();
 		delete this->engine;
+		qInstallMessageHandler(forward);
 		this->engine = next;
 
 		auto* root = component->create();
