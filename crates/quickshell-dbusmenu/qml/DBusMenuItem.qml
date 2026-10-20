@@ -6,7 +6,10 @@ import Quickshell
 QsMenuEntry {
     id: item
     property int _id
-    property QtObject _handle
+    // A var, not a QtObject: when a reload tears the handle down, a QtObject property is cleared
+    // with a change signal, and the icon binding re-ran in a context already gone ("Unable to
+    // assign [undefined] to QString", one per entry with an icon and reload).
+    property var _handle
     property var _childIds: []
     property bool _visible: true
     property bool _displayChildren: false
