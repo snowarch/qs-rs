@@ -7,7 +7,8 @@ QtObject {
     id: root
     property string name
     property NetworkDevice device: null
-    property list<QtObject> nmSettings
+    // A JS array, not list<NMSettings>: see Toplevel.screens (a vanished network is destroyed).
+    property var nmSettings: []
     property bool connected: state === ConnectionState.Connected
     property bool known: false
     property int state: ConnectionState.Disconnected

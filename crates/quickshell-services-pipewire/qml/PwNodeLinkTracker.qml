@@ -5,7 +5,8 @@ import Quickshell.Services.Pipewire
 // target is a monitor node are left out.
 QtObject {
     property PwNode node: null
-    readonly property list<PwLinkGroup> linkGroups: {
+    // A JS array, not list<PwLinkGroup>: see Toplevel.screens (the tracker can go first).
+    readonly property var linkGroups: {
         const n = node
         if (!n) return []
         return Pipewire.linkGroups.values.filter(g => (n.isSink ? g._inputNode : g._outputNode) === n.id
