@@ -36,6 +36,8 @@ pub enum Command {
     Check,
     /// qs-rs only: every warning and error of the running instance, grouped, plus `--static`.
     Errors { follow: bool, static_check: bool },
+    /// qs-rs only: the running instance's frame meter (start [FILE], stop, stats, reset).
+    Frames { action: String, arg: String },
     Log { file: Option<String>, tail: usize, follow: bool, rules: String },
     List,
     Kill,
@@ -70,6 +72,7 @@ enum Level {
     Root,
     Check,
     Errors,
+    Frames,
     Log,
     List,
     Kill,
@@ -88,7 +91,7 @@ impl Level {
         use Level::*;
         match self {
             Root => None,
-            Check | Errors | Log | List | Kill | Ipc | Msg => Some(Root),
+            Check | Errors | Frames | Log | List | Kill | Ipc | Msg => Some(Root),
             IpcShow | IpcCall | IpcWait | IpcListen | Prop => Some(Ipc),
             PropGet => Some(Prop),
         }
@@ -100,6 +103,7 @@ impl Level {
             Root => "qs",
             Check => "check",
             Errors => "errors",
+            Frames => "frames",
             Log => "log",
             List => "list",
             Kill => "kill",
@@ -119,6 +123,7 @@ impl Level {
         Some(match (self, word) {
             (Root, "check") => Check,
             (Root, "errors") => Errors,
+            (Root, "frames") => Frames,
             (Root, "log") => Log,
             (Root, "list") => List,
             (Root, "kill") => Kill,
@@ -140,11 +145,11 @@ impl Level {
     }
 
     fn instance_selection(self) -> bool {
-        matches!(self, Level::Log | Level::Errors | Level::Kill | Level::Ipc | Level::Msg)
+        matches!(self, Level::Log | Level::Errors | Level::Frames | Level::Kill | Level::Ipc | Level::Msg)
     }
 
     fn logging(self) -> bool {
-        matches!(self, Level::Root | Level::Check | Level::Errors | Level::Log | Level::List | Level::Kill | Level::Ipc | Level::Msg)
+        matches!(self, Level::Root | Level::Check | Level::Errors | Level::Frames | Level::Log | Level::List | Level::Kill | Level::Ipc | Level::Msg)
     }
 
     fn config_selection(self) -> bool {
@@ -286,7 +291,7 @@ impl Parser {
         let max = match self.level {
             Level::Log => 1,
             Level::IpcCall | Level::Msg => usize::MAX,
-            Level::IpcWait | Level::IpcListen | Level::PropGet => 2,
+            Level::IpcWait | Level::IpcListen | Level::PropGet | Level::Frames => 2,
             _ => 0,
         };
         if self.positionals.len() >= max {
@@ -338,6 +343,7 @@ impl Parser {
             Level::Root => Command::Launch,
             Level::Check => Command::Check,
             Level::Errors => Command::Errors { follow: self.log_follow, static_check: self.static_check },
+            Level::Frames => Command::Frames { action: Some(next()).filter(|a| !a.is_empty()).unwrap_or_else(|| "stats".into()), arg: next() },
             Level::Log => Command::Log {
                 file: Some(next()).filter(|f| !f.is_empty()),
                 tail: self.log_tail,
@@ -478,6 +484,16 @@ fn help(level: Level) -> String {
         ),
         Level::Msg => format!("qs msg [OPTIONS] TARGET FUNCTION [ARGS...]\n\n  -s, --show              Print information about a function or target.\n\n{INSTANCE}\n{CONFIG}{FILTER}"),
         Level::Check => format!("qs check [OPTIONS]\n\n{CONFIG}"),
+        Level::Frames => format!(
+            "qs frames [OPTIONS] [ACTION [FILE]]\n\n  \
+             The instance's frame meter: per window, frame cost and its stages (polish, sync,\n  \
+             render, swap), refreshes missed and animation steps per frame.\n\n  \
+             start [FILE]            Turn it on (FILE gets one line per frame and window).\n  \
+             stats                   Print what it measured so far, as json (the default).\n  \
+             reset                   Start counting again.\n  \
+             stop                    Print the stats and turn it off.\n\n\
+             {INSTANCE}\n{CONFIG}{FILTER}"
+        ),
         Level::Errors => format!(
             "qs errors [OPTIONS]\n\n  \
              Every warning and error the instance logged since it started, grouped by kind with\n  \

@@ -4,8 +4,8 @@
 //! to the handler's Qt thread and waits for the reply.
 //!
 //! Wire format: QDataStream values back to back. A command is a variant (u8 index: 1 kill,
-//! 2 query metadata, 3 call, 4 listen to signal, 5 read property) followed by its fields; each
-//! reply is a variant of the command's response type.
+//! 2 query metadata, 3 call, 4 listen to signal, 5 read property; qs-rs only: 6 frame meter)
+//! followed by its fields; each reply is a variant of the command's response type.
 
 #[cxx_qt::bridge]
 pub mod qobject {
@@ -295,7 +295,13 @@ pub enum Command {
     Call { target: String, function: String, args: Vec<String> },
     Listen { target: String, signal: String },
     Property { target: String, property: String },
+    /// qs-rs only (`qs frames`): an action for the runtime's frame meter, answered by the runtime
+    /// itself, not by a shell target.
+    Frames { action: String, arg: String },
 }
+
+/// The runtime's answer to `Command::Frames` (set by the qs-rs binary at launch).
+pub static FRAMES_HOOK: std::sync::OnceLock<fn(&str, &str) -> String> = std::sync::OnceLock::new();
 
 impl Command {
     pub fn encode(&self) -> Vec<u8> {
@@ -309,6 +315,7 @@ impl Command {
             }
             Command::Listen { target, signal } => { w.u8(4).string(target).string(signal); },
             Command::Property { target, property } => { w.u8(5).string(target).string(property); },
+            Command::Frames { action, arg } => { w.u8(6).string(action).string(arg); },
         }
         w.0
     }
@@ -321,6 +328,7 @@ impl Command {
             3 => Command::Call { target: r.string()?, function: r.string()?, args: r.list(|r| r.string())? },
             4 => Command::Listen { target: r.string()?, signal: r.string()? },
             5 => Command::Property { target: r.string()?, property: r.string()? },
+            6 => Command::Frames { action: r.string()?, arg: r.string()? },
             _ => return Ok(None),
         }))
     }
@@ -402,6 +410,10 @@ fn respond(cmd: Command) -> Option<Vec<u8>> {
                 Some(Some(v)) => { w.u8(4).string(&v); },
             }
         }
+        Command::Frames { action, arg } => match FRAMES_HOOK.get() {
+            Some(hook) => { w.u8(4).string(&hook(&action, &arg)); },
+            None => { w.u8(TARGET_NOT_FOUND); },
+        },
         Command::Listen { .. } => unreachable!("served by listen()"),
     }
     Some(w.0)

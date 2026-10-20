@@ -449,6 +449,32 @@ pub fn errors(cli: &Cli, follow: bool, static_check: bool) -> i32 {
     crate::errors::run(&log, &shell_dir, follow, static_lines, color)
 }
 
+/// `qs frames`: the instance's frame meter (frames.h); a FILE is made absolute here, since the
+/// instance runs elsewhere.
+pub fn frames(cli: &Cli, action: &str, arg: &str) -> i32 {
+    let Ok((info, _)) = select_instance(cli, false, true) else { return 255 };
+    let arg = if action == "start" && !arg.is_empty() && arg != "-" {
+        std::path::absolute(arg).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| arg.to_string())
+    } else {
+        arg.to_string()
+    };
+    let cmd = quickshell_io::ipc::Command::Frames { action: action.to_string(), arg };
+    match quickshell_io::ipc::request(&info.instance_id, &cmd, quickshell_io::ipc::read_property_reply) {
+        Ok(Ok(out)) => {
+            println!("{out}");
+            0
+        }
+        Ok(Err(_)) => {
+            eprintln!("This instance has no frame meter (not qs-rs, or older than it).");
+            255
+        }
+        Err(e) => {
+            eprintln!("Could not reach the instance: {e}");
+            255
+        }
+    }
+}
+
 fn gpu_info() -> String {
     let mut out = String::new();
     let mut nodes: Vec<PathBuf> = std::fs::read_dir("/sys/class/drm")

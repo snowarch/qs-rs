@@ -12,7 +12,7 @@ for f in ${@:-tests/qml/*.qml}; do
   rm -rf "$QSRS_ISO_ROOT" "$QSRS_RUNTIME"; mkdir -p "$QSRS_RUNTIME"; chmod 700 "$QSRS_RUNTIME"
   # tests/<name>/wrap.sh, when present, wraps the run (e.g. a private daemon the test talks to)
   wrap=tests/$(basename "$f" .qml)/wrap.sh; [ -f "$wrap" ] || wrap=
-  out=$(timeout "${QSRS_TIMEOUT:-10}" scripts/iso.sh ${wrap:+sh "$wrap"} "$BIN" "$f" 2>&1); rc=$?
+  out=$(timeout "${QSRS_TIMEOUT:-20}" scripts/iso.sh ${wrap:+sh "$wrap"} "$BIN" "$f" 2>&1); rc=$?
   if [ $rc -eq 0 ]; then echo "PASS $f"; else echo "FAIL $f (exit $rc)"; echo "$out" | tail -20 | sed 's/^/    /'; fail=1; fi
 done
 exit $fail

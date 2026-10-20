@@ -41,6 +41,7 @@
 #include "quickshell/include/qsrs.h"
 #include "quickshell/include/windowpool.h"
 #include "quickshell/include/reload.h"
+#include "frames.h"
 
 // QtQml's debugger helper (extern "C", exported): the JS/QML call stack of a V4 engine as text,
 // read from the engine's own frame chain, so JIT frames the native unwinder stops at still show.
@@ -272,69 +273,6 @@ inline std::unique_ptr<QGuiApplication> create_app(bool useQApplication, bool de
 	return std::make_unique<QGuiApplication>(argc, argv);
 }
 
-// The basic render loop (one GL context for every window) installs no animation driver, so QML
-// animations step on QUnifiedTimer's fixed 16 ms tick: ~62 steps a second, which judders on a
-// 75 or 144 Hz screen. This driver ticks at the fastest screen's refresh rate while any animation
-// runs (the ticks are what makes animated windows ask for frames) and sleeps otherwise. Each
-// frame (an update request, paced by the compositor's frame callbacks) also brings animations
-// to its own time before it is built: a free-running timer drifts against the real vblank, and
-// 1 Hz apart was a doubled or missing step every ~0.8 s.
-class DisplayAnimationDriver: public QAnimationDriver {
-public:
-	explicit DisplayAnimationDriver(QObject* parent): QAnimationDriver(parent) {
-		mTimer.setTimerType(Qt::PreciseTimer);
-		QObject::connect(&mTimer, &QChronoTimer::timeout, this, [this] { tick(); });
-		auto watch = [this](QScreen* s) {
-			QObject::connect(s, &QScreen::refreshRateChanged, this, [this] { updateInterval(); });
-			updateInterval();
-		};
-		for (auto* s: QGuiApplication::screens()) watch(s);
-		QObject::connect(qApp, &QGuiApplication::screenAdded, this, watch);
-		QObject::connect(qApp, &QGuiApplication::screenRemoved, this, [this] { updateInterval(); });
-		qApp->installEventFilter(this);
-	}
-
-	bool eventFilter(QObject* watched, QEvent* event) override {
-		// Windows drawing in the same refresh share one step.
-		if (event->type() == QEvent::UpdateRequest && isRunning() && watched->isWindowType()
-		    && mClock.elapsed() - mLastTick >= 2)
-			tick();
-		return false;
-	}
-
-	qint64 elapsed() const override { return isRunning() ? mClock.elapsed() : 0; }
-
-protected:
-	void start() override {
-		mClock.start();
-		mLastTick = 0;
-		QAnimationDriver::start();
-		mTimer.start();
-	}
-	void stop() override {
-		mTimer.stop();
-		QAnimationDriver::stop();
-	}
-
-private:
-	void tick() {
-		mLastTick = mClock.elapsed();
-		advance();
-	}
-
-	void updateInterval() {
-		qreal hz = 60;
-		for (auto* s: QGuiApplication::screens()) hz = std::max(hz, s->refreshRate());
-		// Tests have no real screen: QSRS_ANIMATION_HZ stands in for one.
-		if (auto forced = qEnvironmentVariableIntValue("QSRS_ANIMATION_HZ"); forced > 0) hz = forced;
-		mTimer.setInterval(std::chrono::nanoseconds(qint64(1e9 / hz)));
-	}
-
-	QChronoTimer mTimer;
-	QElapsedTimer mClock;
-	qint64 mLastTick = 0;
-};
-
 // Upstream launch.cpp after the application exists: the app id surfaces carry, transparent
 // windows, NativeTextRendering, and hidden windows never quit the shell.
 inline void configure_app(const QString& appId, bool nativeTextRendering) {
@@ -346,6 +284,12 @@ inline void configure_app(const QString& appId, bool nativeTextRendering) {
 	if (!qEnvironmentVariableIsSet("QSRS_PER_WINDOW_GL") && !qEnvironmentVariableIsSet("QSRS_QT_ANIMATION_TIMER")) {
 		(new DisplayAnimationDriver(qApp))->install();
 	}
+	if (qEnvironmentVariableIsSet("QSRS_FRAME_LOG")) FrameMeter::get();
+}
+
+inline rust::String frames_command(rust::Str action, rust::Str arg) {
+	auto out = frames_command_on_gui(QString::fromUtf8(action.data(), action.size()), QString::fromUtf8(arg.data(), arg.size()));
+	return rust::String(out.toStdString());
 }
 
 inline int exec_app(QGuiApplication& /*app*/) { return QGuiApplication::exec(); }

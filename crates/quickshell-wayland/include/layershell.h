@@ -97,6 +97,8 @@ public:
 		auto* ls = LayerShellQt::Window::get(window);
 		// Read by QsWindowPool: a frozen window gives way to a fresh one in its layer.
 		window->setProperty("_qsLayer", layer);
+		// The frame meter's name for the window (qs-rs/include/frames.h).
+		window->setProperty("_qsNamespace", scope);
 		ls->setAnchors(LayerShellQt::Window::Anchors(anchors));
 		ls->setLayer(LayerShellQt::Window::Layer(layer));
 		ls->setKeyboardInteractivity(LayerShellQt::Window::KeyboardInteractivity(keyboard));

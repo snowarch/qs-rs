@@ -274,6 +274,7 @@ fn main() {
         _ if cli.version => command::print_version(cli.verbosity),
         cli::Command::Log { file, tail, follow, rules } => command::log(&cli, file.as_deref(), *tail, *follow, rules),
         cli::Command::Errors { follow, static_check } => command::errors(&cli, *follow, *static_check),
+        cli::Command::Frames { action, arg } => command::frames(&cli, action, arg),
         cli::Command::List => command::list(&cli),
         cli::Command::Kill => command::kill(&cli),
         cli::Command::Ipc(ipc) => command::ipc(&cli, ipc),
@@ -354,6 +355,7 @@ fn run_shell(cli: &cli::Cli, config: PathBuf, started: std::time::Instant) -> i3
                 if let Err(e) = quickshell::log::init_files(dir) {
                     eprintln!("Could not create the instance log files: {e}");
                 }
+                let _ = quickshell_io::ipc::FRAMES_HOOK.set(|action, arg| host::ffi::frames_command(action, arg));
                 quickshell_io::ipc::start_server(dir)
             }
             Err(e) => eprintln!("Could not create the instance runtime dir: {e}"),
