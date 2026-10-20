@@ -61,6 +61,7 @@ pub mod qobject {
     }
 
     impl cxx_qt::Threading for Process {}
+    impl cxx_qt::Initialize for Process {}
 }
 
 use crate::datastream::Parser;
@@ -82,6 +83,7 @@ pub struct ProcessRust {
 
     target_running: bool,
     start_queued: bool,
+    ready: bool,
     run_id: u64,
     pid: Option<u32>,
     stdin: Option<quickshell::proc::Stdin>,
@@ -103,6 +105,7 @@ impl Default for ProcessRust {
             stdin_enabled: false,
             target_running: false,
             start_queued: false,
+            ready: false,
             run_id: 0,
             pid: None,
             stdin: None,
@@ -117,6 +120,12 @@ impl Drop for ProcessRust {
         if let Some(pid) = self.pid {
             quickshell::proc::kill(pid, libc::SIGKILL);
         }
+    }
+}
+
+impl cxx_qt::Initialize for qobject::Process {
+    fn initialize(self: Pin<&mut Self>) {
+        self.queue_start();
     }
 }
 
@@ -176,13 +185,24 @@ impl qobject::Process {
     }
 
     /// Starts on the next event loop turn so every binding of a fresh object is applied first.
+    /// Upstream starts on the spot once the shell has loaded (`isPostReload`), so `running` reads
+    /// true right after `running = true`; before that, the start waits for the creation to finish
+    /// (command, environment and parsers all assigned). inir chains jobs on that: a queue that
+    /// checks `running` before starting the next one lost a job when two came in the same turn
+    /// (a live wallpaper never got its playback copy and stayed black).
     fn queue_start(mut self: Pin<&mut Self>) {
+        if self.ready {
+            self.start_if_ready();
+            return;
+        }
         if self.start_queued {
             return;
         }
         self.as_mut().rust_mut().start_queued = true;
         let _ = self.qt_thread().queue(|mut this| {
-            this.as_mut().rust_mut().start_queued = false;
+            let mut rust = this.as_mut().rust_mut();
+            rust.start_queued = false;
+            rust.ready = true;
             this.start_if_ready();
         });
     }
