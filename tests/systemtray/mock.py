@@ -4,6 +4,7 @@ and registers it; "pathonly" registers a bare path on the mock's connection (the
 way). Both register when org.kde.StatusNotifierWatcher appears. org.qsrs.Mock records the
 calls items receive and lets the test change or drop them. "pathonly" also serves a
 com.canonical.dbusmenu menu at /menu for tests/qml/dbusmenu.qml."""
+import os
 import dbus
 import dbus.service
 from dbus.mainloop.glib import DBusGMainLoop
@@ -158,6 +159,11 @@ class Mock(dbus.service.Object):
     @dbus.service.method("org.qsrs.Mock")
     def DropNamed(self):
         named_conn.release_name(named_name)
+
+    @dbus.service.method("org.qsrs.Mock")
+    def Die(self):
+        """The whole app goes away (a crashed Steam): every item and menu with it."""
+        GLib.timeout_add(100, lambda: os._exit(0))
 
 
 menu = Menu(bus, "/menu")

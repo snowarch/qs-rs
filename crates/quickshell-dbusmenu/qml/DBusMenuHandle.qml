@@ -47,7 +47,7 @@ QsMenuHandle {
             _client.destroy()
             _client = null
             menu = null
-            for (const id in _items) _items[id].destroy()
+            for (const id in _items) _items[id]._release()
             _items = {}
             _root = null
         }
@@ -62,7 +62,8 @@ QsMenuHandle {
     function _item(id) {
         let it = _items[id]
         if (!it) {
-            it = _itemComponent.createObject(root, { _id: id, _handle: root })
+            // Owned by JS: a removed item is released, not destroyed (see DBusMenuItem._release).
+            it = _itemComponent.createObject(null, { _id: id, _handle: root })
             _items[id] = it
         }
         return it
@@ -76,7 +77,7 @@ QsMenuHandle {
         if (!it) return
         for (const c of it._childIds) _removeRecursive(c)
         delete _items[id]
-        it.destroy()
+        it._release()
     }
     function _refreshChildren(item) {
         if (!item) return

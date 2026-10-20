@@ -21,6 +21,15 @@ QsMenuEntry {
     onClosed: _handle?._client?.sendEvent(_id, "closed")
     onTriggered: _handle?._client?.sendEvent(_id, "clicked")
 
+    // The app took the item back (a new layout, or the app went away). A shell may still hold it in
+    // JS from the menu it drew (a click on a menu that just changed): destroying it turned that
+    // click into a TypeError on a dead object. It goes inert instead, never reaches the app again,
+    // and the JS heap frees it once nothing holds it.
+    function _release() {
+        _handle = null
+        children.values = []
+    }
+
     // `full` is a whole property set (GetLayout): absent keys reset to their default, like
     // upstream. A partial update (ItemsPropertiesUpdated) only touches what it names; `removed`
     // names reset.
