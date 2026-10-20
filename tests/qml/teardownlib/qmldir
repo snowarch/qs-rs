@@ -1,0 +1,13 @@
+singleton Store1 1.0 Store1.qml
+singleton Holder1 1.0 Holder1.qml
+singleton Store2 1.0 Store2.qml
+singleton Holder2 1.0 Holder2.qml
+singleton Store3 1.0 Store3.qml
+singleton Holder3 1.0 Holder3.qml
+singleton Store4 1.0 Store4.qml
+singleton Holder4 1.0 Holder4.qml
+singleton Store5 1.0 Store5.qml
+singleton Holder5 1.0 Holder5.qml
+singleton Store6 1.0 Store6.qml
+singleton Holder6 1.0 Holder6.qml
+Probe 1.0 Probe.qml

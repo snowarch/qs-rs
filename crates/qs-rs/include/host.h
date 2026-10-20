@@ -512,6 +512,13 @@ private:
 		// proxies to take back (QsWindowPool).
 		QsWindowPool::stash();
 		// The old generation: root first (its children may still reach the engine), then the engine.
+		// No JS runs while it comes apart (upstream EngineGeneration::destroy): the engine marks
+		// its singletons deleted before deleting them, but not the parentless JS objects they
+		// hold, whose bindings would then read singletons already freed (SEGV in
+		// lookupSingletonProperty, tests/qml/reloadteardown.qml).
+		// QSRS_TEST_TEARDOWN_JS keeps the old bug, for tests/crashstack to crash mid-reload.
+		static const bool keepJs = qEnvironmentVariableIsSet("QSRS_TEST_TEARDOWN_JS");
+		if (!keepJs) this->engine->setInterrupted(true);
 		delete this->root;
 		this->root = nullptr;
 		QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
