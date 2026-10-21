@@ -321,6 +321,18 @@ public:
 				auto now = fc::now_ns();
 				f.interval = f.start ? now - f.start : 0;
 				f.start = now;
+				// A frame starting is the last moment its own step can land in it (Qt's threaded loop
+				// advances its driver there too). The step queued after the previous frame, or the timer,
+				// can wait behind back to back frames of heavy windows: on Settings' first frames
+				// (30 ms each) both waited 70 ms and every QML Timer and animation stood still.
+				if (this->isRunning()) {
+					if (this->queued) {
+						this->queued = false;
+						this->step(this->pending);
+					} else if (now - this->lastStep > window_period_ns(w) * 3 / 2) {
+						this->step(now, false);
+					}
+				}
 			}
 		}
 		return false;
@@ -354,7 +366,7 @@ private:
 	}
 
 	void swapped(QQuickWindow* w) {
-		if (!this->isRunning() || this->queued) return;
+		if (!this->isRunning()) return;
 		auto f = this->frames.value(w);
 		// The next frame starts one refresh after this one: the screen's, or the pace the
 		// compositor really calls back at when that is faster (a refresh rate reported low, a
@@ -368,12 +380,16 @@ private:
 		auto target = std::max(f.start ? f.start + period : 0, fc::now_ns());
 		// Another window's frame of the same refresh already stepped to this vblank.
 		if (target <= fc::step_ns + period / 2) return;
+		// A later frame while a step waits moves its time on; it used to be dropped.
+		this->pending = std::max(this->pending, target);
+		if (this->queued) return;
 		this->queued = true;
 		// After renderWindow returns: the step dirties windows, and a request made inside the
 		// frame would be dropped by the render loop's own bookkeeping.
-		QMetaObject::invokeMethod(this, [this, target] {
+		QMetaObject::invokeMethod(this, [this] {
+			if (!this->queued) return;
 			this->queued = false;
-			if (this->isRunning()) this->step(target);
+			if (this->isRunning()) this->step(this->pending);
 		}, Qt::QueuedConnection);
 	}
 
@@ -381,6 +397,7 @@ private:
 	// stepping on its own it keeps the refresh rate.
 	void step(qint64 target, bool fromFrame = true) {
 		auto begin = fc::now_ns();
+		this->lastStep = begin;
 		fc::step_ns = std::max(target, fc::step_ns);
 		this->advance();
 		auto end = fc::now_ns();
@@ -400,6 +417,7 @@ private:
 	QHash<QQuickWindow*, Frame> frames;
 	qint64 origin = 0;
 	bool queued = false;
+	qint64 pending = 0, lastStep = 0;
 	bool slowFrames = false;
 };
 
