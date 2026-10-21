@@ -54,6 +54,30 @@ QtObject {
     signal reloadCompleted()
     signal reloadFailed(string errorString)
 
+    // What a service drops from its model lives one more second before it is destroyed. Qt copies a
+    // JS-array model entry into a QVariantMap with raw QObject pointers when it makes a delegate and
+    // writes it ticks later, so a consumer that rebuilds its list on a timer (inir's toplevels: 100 ms)
+    // handed an incubating delegate a freed object (tests/qml/retire.qml; Quickshell crashes the same).
+    property var _retired: []
+    property Timer _retireTimer: Timer {
+        interval: 250
+        repeat: true
+        onTriggered: {
+            const due = Date.now() - 1000
+            const keep = []
+            for (const r of root._retired) {
+                if (r.at > due) keep.push(r)
+                else if (r.obj) r.obj.destroy()
+            }
+            root._retired = keep
+            if (keep.length === 0) stop()
+        }
+    }
+    function _retire(obj) {
+        if (!obj) return
+        root._retired.push({ obj: obj, at: Date.now() })
+        root._retireTimer.start()
+    }
     function env(name) { return QuickshellCore.env(name) }
     function execDetached(context) { QuickshellCore.execDetached(context) }
     function shellPath(path) { return QuickshellCore.shellPath(path) }

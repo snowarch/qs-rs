@@ -39,7 +39,7 @@ QtObject {
             t.closed()
             if (root._active === t) root._active = null
             root.toplevels.values = root.toplevels.values.filter(x => x !== t)
-            t.destroy()
+            Quickshell._retire(t)
         }
     }
 }
