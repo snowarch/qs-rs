@@ -47,14 +47,32 @@ impl Drop for Stdin {
     }
 }
 
-fn command(ctx: &Context) -> Command {
-    let mut cmd = Command::new(&ctx.command[0]);
-    cmd.args(&ctx.command[1..]);
-    if !ctx.working_directory.is_empty() {
-        cmd.current_dir(&ctx.working_directory);
+// A bare name is looked up here, in the child's own PATH (where execvp would look). Handed a name
+// to search with PATH in the environment, std gives up posix_spawn for fork + exec: the fork copies
+// the shell's page tables and the Qt thread then waits for the exec, ~20 ms a spawn (iRiS Settings
+// starts seven on open: 140 ms before it moved). QProcess upstream never forks the whole process.
+fn resolve(program: &str, env: &[(String, String)]) -> Option<std::path::PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    if program.contains('/') {
+        return None;
     }
+    let path = &env.iter().find(|(k, _)| k == "PATH")?.1;
+    for dir in path.split(':').map(std::path::Path::new) {
+        // A relative entry is the child's working directory: std's own search keeps that right.
+        if !dir.is_absolute() {
+            return None;
+        }
+        let p = dir.join(program);
+        if p.metadata().is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0) {
+            return Some(p);
+        }
+    }
+    None
+}
+
+fn command(ctx: &Context) -> Command {
+    use std::os::unix::process::CommandExt;
     let initial = crate::common::initial_env();
-    cmd.env_clear();
     let mut env: Vec<(String, String)> = if ctx.clear_environment { Vec::new() } else { initial.to_vec() };
     for (name, value) in &ctx.environment {
         env.retain(|(k, _)| k != name);
@@ -68,6 +86,19 @@ fn command(ctx: &Context) -> Command {
             None => {}
         }
     }
+    let mut cmd = match resolve(&ctx.command[0], &env) {
+        Some(path) => {
+            let mut cmd = Command::new(path);
+            cmd.arg0(&ctx.command[0]);
+            cmd
+        }
+        None => Command::new(&ctx.command[0]),
+    };
+    cmd.args(&ctx.command[1..]);
+    if !ctx.working_directory.is_empty() {
+        cmd.current_dir(&ctx.working_directory);
+    }
+    cmd.env_clear();
     cmd.envs(env);
     cmd
 }
@@ -391,6 +422,63 @@ mod tests {
         stdin.send(b"abc".to_vec()).unwrap();
         drop(stdin);
         assert_eq!(finish(&rx, 5), ("abc".into(), 0));
+    }
+
+    #[test]
+    fn bare_names_resolve_in_the_childs_path() {
+        let env = |p: &str| vec![("PATH".to_string(), p.to_string())];
+        assert_eq!(resolve("sh", &env("/nonexistent:/usr/bin")), Some("/usr/bin/sh".into()));
+        // What std would search differently stays std's: paths, relative entries, no PATH at all.
+        assert_eq!(resolve("/usr/bin/sh", &env("/usr/bin")), None);
+        assert_eq!(resolve("sh", &env("bin:/usr/bin")), None);
+        assert_eq!(resolve("sh", &[]), None);
+        assert_eq!(resolve("qsrs-no-such-program", &env("/usr/bin")), None);
+    }
+
+    #[test]
+    fn a_resolved_program_keeps_its_argv0_and_the_childs_path() {
+        let dir = std::env::temp_dir().join(format!("qsrs-proc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("qsrs-probe");
+        std::fs::write(&script, "#!/bin/sh\nprintf '%s' \"$0\"\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = format!("{}:/usr/bin", dir.display());
+        let ctx = Context {
+            command: vec!["qsrs-probe".into()],
+            environment: vec![("PATH".into(), Some(path))],
+            ..Default::default()
+        };
+        let (tx, rx) = channel();
+        let tx = Mutex::new(tx);
+        let _s = spawn(&ctx, true, true, false, move |e| drop(tx.lock().unwrap().send(e))).unwrap();
+        let got = finish(&rx, 5);
+        std::fs::remove_dir_all(&dir).unwrap();
+        // A script's $0 is the path the kernel ran; argv[0] of a binary is checked below.
+        assert_eq!(got, (script.display().to_string(), 0));
+        let (_s, rx) = run(&["sh", "-c", "tr '\\0' ' ' < /proc/$$/cmdline"], false);
+        assert_eq!(finish(&rx, 5), ("sh -c tr '\\0' ' ' < /proc/$$/cmdline ".into(), 0));
+    }
+
+    #[test]
+    fn a_bare_name_runs_with_a_working_directory_and_its_own_environment() {
+        let ctx = Context {
+            command: vec!["sh".into(), "-c".into(), "printf '%s %s' \"$PWD\" \"$QSRS_PROBE\"".into()],
+            working_directory: "/usr".into(),
+            environment: vec![("QSRS_PROBE".into(), Some("set".into()))],
+            ..Default::default()
+        };
+        let (tx, rx) = channel();
+        let tx = Mutex::new(tx);
+        let _s = spawn(&ctx, true, true, false, move |e| drop(tx.lock().unwrap().send(e))).unwrap();
+        assert_eq!(finish(&rx, 5), ("/usr set".into(), 0));
+    }
+
+    #[test]
+    fn a_program_missing_from_path_fails_as_before() {
+        let ctx = Context { command: vec!["qsrs-no-such-program".into()], ..Default::default() };
+        let err = spawn(&ctx, true, true, false, |_| {}).err().expect("spawned a missing program");
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
     }
 
     #[test]

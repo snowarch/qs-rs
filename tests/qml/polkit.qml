@@ -11,6 +11,8 @@ ShellRoot {
     id: root
     property var errors: []
     property int step: 0
+    property bool thirdBegun: false
+    property bool fifthBegun: false
     property int ticks: 0
     property var st: null
     property int started: 0
@@ -123,10 +125,15 @@ ShellRoot {
                 root.check("succeeded signal", root.succeeded === 1)
                 root.check("completed successfully", JSON.stringify(root.ended[0]) === JSON.stringify({ cookie: "c1", completed: true, success: true, cancelled: false }))
                 root.mock("Begin", ["c2", "users"])
-                root.mock("Begin", ["c3", "users"])
                 root.step = 5
                 break
             case 5:
+                // Two gdbus calls at once reach the daemon in either order: c3 goes once c2 is the flow.
+                if (!root.thirdBegun) {
+                    if (flow?.cookie !== "c2") return
+                    root.thirdBegun = true
+                    root.mock("Begin", ["c3", "users"])
+                }
                 if (!flow || flow.cookie !== "c2" || !flow.isResponseRequired || root.result("c3") !== "pending") return
                 root.check("queued request waits", root.started === 2)
                 root.mock("Cancel", ["c3"])
@@ -143,11 +150,15 @@ ShellRoot {
                 root.check("user cancel flags", JSON.stringify(root.ended[1]) === JSON.stringify({ cookie: "c2", completed: true, success: false, cancelled: true }))
                 root.check("user cancel is not daemon cancel", root.daemonCancels === 0)
                 root.mock("Begin", ["c4", "netgroup"])
-                root.mock("Begin", ["c5", "users"])
                 root.step = 8
                 break
             case 8:
-                if (!root.cancelled("c4") || !flow || flow.cookie !== "c5" || !flow.isResponseRequired) return
+                if (!root.cancelled("c4")) return
+                if (!root.fifthBegun) {
+                    root.fifthBegun = true
+                    root.mock("Begin", ["c5", "users"])
+                }
+                if (!flow || flow.cookie !== "c5" || !flow.isResponseRequired) return
                 root.check("no identities reason", root.result("c4").includes("no supported identities"))
                 root.mock("Cancel", ["c5"])
                 root.step = 9
