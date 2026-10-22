@@ -37,6 +37,12 @@
 #include <functional>
 #include <memory>
 #include "rust/cxx.h"
+
+// Qt's hook table for debuggers (qhooks_p.h, exported by QtCore; index 4 is RemoveQObject, a
+// stable slot of the hook ABI).
+QT_BEGIN_NAMESPACE
+extern Q_CORE_EXPORT quintptr qtHookData[];
+QT_END_NAMESPACE
 #include "quickshell/include/log.h"
 #include "quickshell/include/qsrs.h"
 #include "quickshell/include/windowpool.h"
@@ -287,7 +293,17 @@ inline void configure_app(const QString& appId, bool nativeTextRendering) {
 	if (qEnvironmentVariableIsSet("QSRS_FRAME_LOG")) FrameMeter::get();
 }
 
+QString memory_report(bool reclaimFirst);
+
+// `qs frames ...` and `qs memory [reclaim]` (sent as the frames action "memory"): runtime
+// commands answered on the GUI thread.
 inline rust::String frames_command(rust::Str action, rust::Str arg) {
+	if (action == rust::Str("memory")) {
+		QString out;
+		bool reclaimFirst = arg == rust::Str("reclaim");
+		QMetaObject::invokeMethod(qApp, [&] { out = memory_report(reclaimFirst); }, Qt::BlockingQueuedConnection);
+		return rust::String(out.toStdString());
+	}
 	auto out = frames_command_on_gui(QString::fromUtf8(action.data(), action.size()), QString::fromUtf8(arg.data(), arg.size()));
 	return rust::String(out.toStdString());
 }
@@ -326,17 +342,18 @@ inline void reclaim_signal(int) { reclaimRequests.fetch_add(1); }
 extern "C" int mallctl(const char* name, void* oldp, size_t* oldlenp, void* newp, size_t newlen);
 
 // One line of where memory sits: process RSS, jemalloc live/resident/retained bytes (MB).
-inline void print_memory(const char* stage) {
+inline QString memory_line(const char* stage) {
 	long pages = 0, rss = 0;
 	if (FILE* f = fopen("/proc/self/statm", "r")) { if (fscanf(f, "%ld %ld", &pages, &rss) != 2) rss = 0; fclose(f); }
 	uint64_t epoch = 1;
 	size_t len = sizeof epoch;
 	mallctl("epoch", &epoch, &len, &epoch, len);
 	auto stat = [](const char* name) { size_t v = 0, l = sizeof v; return mallctl(name, &v, &l, nullptr, 0) == 0 ? v >> 20 : 0; };
-	fprintf(stderr, "qsrs-memory %-10s rss=%ldMB allocated=%zuMB active=%zuMB resident=%zuMB retained=%zuMB\n", stage,
-	        rss * sysconf(_SC_PAGESIZE) >> 20, stat("stats.allocated"), stat("stats.active"), stat("stats.resident"),
-	        stat("stats.retained"));
+	return QString::asprintf("qsrs-memory %-10s rss=%ldMB allocated=%zuMB active=%zuMB resident=%zuMB retained=%zuMB", stage,
+	                         rss * sysconf(_SC_PAGESIZE) >> 20, stat("stats.allocated"), stat("stats.active"),
+	                         stat("stats.resident"), stat("stats.retained"));
 }
+inline void print_memory(const char* stage) { fprintf(stderr, "%s\n", qPrintable(memory_line(stage))); }
 
 // Measurement aid (SIGUSR2 under QSRS_OBJECT_CENSUS=signal): what each reclaim step gives back.
 inline void reclaim_steps(QQmlEngine* engine) {
@@ -353,8 +370,10 @@ inline void reclaim_steps(QQmlEngine* engine) {
 	print_memory("purge");
 }
 
-inline void print_census() {
+inline QStringList census_lines() {
+	QStringList out;
 	QHash<QString, int> byFile;
+	QHash<QString, QPair<int, qint64>> images, layers;
 	QSet<QObject*> seen;
 	std::function<void(QObject*)> walk = [&](QObject* o) {
 		if (!o || seen.contains(o)) return;
@@ -362,6 +381,18 @@ inline void print_census() {
 		auto* ctx = qmlContext(o);
 		auto file = ctx ? ctx->baseUrl().fileName() : QString("<c++> ") + o->metaObject()->className();
 		byFile[file]++;
+		if (auto* item = qobject_cast<QQuickItem*>(o); item && item->isTextureProvider()) {
+			// What the item puts on the GPU: an image's decoded size, or the offscreen texture of a
+			// layer or a ShaderEffectSource (its textureSize, else its own size, both at the dpr).
+			// Shared images count once per item: an upper bound.
+			bool image = QByteArray(o->metaObject()->className()).contains("Image");
+			auto size = image ? o->property("sourceSize").toSize() : o->property("textureSize").toSize();
+			auto dpr = item->window() ? item->window()->devicePixelRatio() : 1.0;
+			if (!image && size.isEmpty()) size = (item->size() * dpr).toSize();
+			auto& slot = (image ? images : layers)[file];
+			slot.first++;
+			slot.second += qint64(std::max(0, size.width())) * std::max(0, size.height()) * 4;
+		}
 		for (auto* c: o->children()) walk(c);
 		if (auto* item = qobject_cast<QQuickItem*>(o)) for (auto* c: item->childItems()) walk(c);
 	};
@@ -377,10 +408,26 @@ inline void print_census() {
 	QList<QPair<int, QString>> top;
 	for (auto it = byFile.begin(); it != byFile.end(); ++it) top.append({it.value(), it.key()});
 	std::sort(top.begin(), top.end(), [](auto& a, auto& b) { return a.first > b.first; });
-	fprintf(stderr, "qsrs-census total=%lld windows=%lld\n", (long long)seen.size(), (long long)QGuiApplication::allWindows().size());
-	fprintf(stderr, "qsrs-census windows %s\n", qPrintable(windows.join(' ')));
+	out << QString::asprintf("qsrs-census total=%lld windows=%lld", (long long)seen.size(), (long long)QGuiApplication::allWindows().size());
+	out << "qsrs-census windows " + windows.join(' ');
 	for (int i = 0; i < std::min<int>(40, top.size()); i++)
-		fprintf(stderr, "qsrs-census %6d %s\n", top[i].first, qPrintable(top[i].second));
+		out << QString::asprintf("qsrs-census %6d %s", top[i].first, qPrintable(top[i].second));
+	for (auto [kind, table]: {std::pair {"images", &images}, std::pair {"layers", &layers}}) {
+		QList<QPair<qint64, QString>> heavy;
+		qint64 total = 0;
+		for (auto it = table->begin(); it != table->end(); ++it) {
+			total += it.value().second;
+			heavy.append({it.value().second, QString("%1x %2").arg(it.value().first).arg(it.key())});
+		}
+		std::sort(heavy.begin(), heavy.end(), [](auto& a, auto& b) { return a.first > b.first; });
+		out << QString::asprintf("qsrs-census %s total=%lldMB", kind, (long long)(total >> 20));
+		for (int i = 0; i < std::min<int>(12, heavy.size()) && heavy[i].first >= (1 << 20); i++)
+			out << QString::asprintf("qsrs-census %s %5lldMB %s", kind, (long long)(heavy[i].first >> 20), qPrintable(heavy[i].second));
+	}
+	return out;
+}
+inline void print_census() {
+	for (auto& line: census_lines()) fprintf(stderr, "%s\n", qPrintable(line));
 }
 
 // Memory goes back after surfaces close. Freed QML objects leave garbage in the JS heap until an
@@ -398,18 +445,45 @@ inline void reclaim(QQmlEngine* engine) {
 	mallctl("arena.4096.purge", nullptr, nullptr, nullptr, 0);
 }
 
-// Watches window Hide events (no polling: an idle shell is never woken for this).
+// Watches window Hide events and large teardowns (no polling: an idle shell is never woken for this).
+// A teardown is what a visible surface does without hiding: a Design switch swaps every skin, a
+// Settings page or a Loader drops its tree. Qt's object-removal hook (the one debuggers use,
+// chained) counts destroyed objects from any thread; once a burst passes `burst` objects inside
+// `window` ms, the watcher is told once and reclaims when the teardown has been quiet for
+// `settle` ms. Measured on inir: each iRiS <-> AIRISU switch kept 7-34 MB until a window hid.
 class ReclaimWatcher: public QObject {
 public:
+	static constexpr int burst = 2000;
+	static constexpr qint64 window = 10000;
+	static constexpr int settle = 3000;
+
 	explicit ReclaimWatcher(QQmlEngine* engine): QObject(engine), engine(engine) {
-		for (auto* t: {&this->early, &this->late}) {
+		for (auto* t: {&this->early, &this->late, &this->quiet}) {
 			t->setSingleShot(true);
-			QObject::connect(t, &QTimer::timeout, this, [this] { reclaim(this->engine); });
+			QObject::connect(t, &QTimer::timeout, this, [this] { this->run(); });
 		}
 		this->early.setInterval(6000);
 		this->late.setInterval(26000);
+		this->quiet.setInterval(settle);
 		qApp->installEventFilter(this);
+		if (previousRemove == nullptr && qtHookData[removeHook] != reinterpret_cast<quintptr>(&removed)) {
+			previousRemove = reinterpret_cast<RemoveCallback>(qtHookData[removeHook]);
+			qtHookData[removeHook] = reinterpret_cast<quintptr>(&removed);
+		}
+		current.store(this);
 	}
+	~ReclaimWatcher() override {
+		auto* self = this;
+		current.compare_exchange_strong(self, nullptr);
+	}
+
+	static QQmlEngine* engineNow() {
+		auto* watcher = current.load();
+		return watcher ? watcher->engine : nullptr;
+	}
+
+	// Objects destroyed in the burst being counted (QSRS_RECLAIM_LOG=1 prints each reclaim).
+	static inline std::atomic<int> destroyed {0};
 
 protected:
 	bool eventFilter(QObject* o, QEvent* e) override {
@@ -421,9 +495,61 @@ protected:
 	}
 
 private:
+	static inline std::atomic<ReclaimWatcher*> current {nullptr};
+	static inline std::atomic<bool> told {false};
+	static inline std::atomic<qint64> burstStart {0};
+	using RemoveCallback = void (*)(QObject*);
+	static constexpr int removeHook = 4;
+	static inline RemoveCallback previousRemove = nullptr;
+
+	static qint64 nowMs() {
+		return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+	}
+
+	// Runs inside every QObject destructor, on any thread: a counter and, once per burst, one
+	// queued call to the watcher.
+	static void removed(QObject* o) {
+		if (previousRemove) previousRemove(o);
+		auto now = nowMs();
+		auto start = burstStart.load(std::memory_order_relaxed);
+		if (now - start > window) {
+			burstStart.store(now, std::memory_order_relaxed);
+			destroyed.store(0, std::memory_order_relaxed);
+		}
+		if (destroyed.fetch_add(1, std::memory_order_relaxed) + 1 < burst) return;
+		auto* watcher = current.load();
+		if (watcher == nullptr || told.exchange(true)) return;
+		QMetaObject::invokeMethod(watcher, [watcher] {
+			watcher->lastCount = destroyed.load(std::memory_order_relaxed);
+			watcher->quiet.start();
+		}, Qt::QueuedConnection);
+	}
+
+	void run() {
+		// A teardown still going (its count grew since the burst was told) waits another round.
+		if (sender() == &this->quiet) {
+			int count = destroyed.load(std::memory_order_relaxed);
+			if (count > this->lastCount + burst / 4) {
+				this->lastCount = count;
+				this->quiet.start();
+				return;
+			}
+		}
+		static const bool log = qEnvironmentVariableIntValue("QSRS_RECLAIM_LOG") == 1;
+		if (log) print_memory(sender() == &this->quiet ? "burst" : "hidden");
+		reclaim(this->engine);
+		if (log) print_memory("reclaimed");
+		if (sender() == &this->quiet) {
+			told.store(false);
+			destroyed.store(0, std::memory_order_relaxed);
+		}
+	}
+
 	QQmlEngine* engine;
 	QTimer early;
 	QTimer late;
+	QTimer quiet;
+	int lastCount = 0;
 };
 
 // Where the memory peak happened (AU-F4: 890 MB once against 365 at rest, and the journal had
@@ -537,6 +663,22 @@ private:
 	QList<QPair<qint64, QString>> events;
 };
 inline PeakWatcher* PeakWatcher::instance = nullptr;
+
+// `qs memory`: where the running shell's memory sits (process and jemalloc), its live objects by
+// file and what its images and offscreen layers hold. `reclaim` runs a reclaim pass first.
+inline QString memory_report(bool reclaimFirst) {
+	QStringList out;
+	if (reclaimFirst) {
+		auto* engine = ReclaimWatcher::engineNow();
+		out << memory_line("before");
+		if (engine) reclaim(engine);
+		out << memory_line(engine ? "reclaimed" : "no-engine");
+	} else {
+		out << memory_line("now");
+	}
+	out << census_lines();
+	return out.join('\n');
+}
 
 inline void watch_memory_peaks() {
 	if (PeakWatcher::instance == nullptr) PeakWatcher::instance = new PeakWatcher();

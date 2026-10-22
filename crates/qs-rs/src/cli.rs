@@ -73,6 +73,7 @@ enum Level {
     Check,
     Errors,
     Frames,
+    Memory,
     Log,
     List,
     Kill,
@@ -91,7 +92,7 @@ impl Level {
         use Level::*;
         match self {
             Root => None,
-            Check | Errors | Frames | Log | List | Kill | Ipc | Msg => Some(Root),
+            Check | Errors | Frames | Memory | Log | List | Kill | Ipc | Msg => Some(Root),
             IpcShow | IpcCall | IpcWait | IpcListen | Prop => Some(Ipc),
             PropGet => Some(Prop),
         }
@@ -104,6 +105,7 @@ impl Level {
             Check => "check",
             Errors => "errors",
             Frames => "frames",
+            Memory => "memory",
             Log => "log",
             List => "list",
             Kill => "kill",
@@ -124,6 +126,7 @@ impl Level {
             (Root, "check") => Check,
             (Root, "errors") => Errors,
             (Root, "frames") => Frames,
+            (Root, "memory") => Memory,
             (Root, "log") => Log,
             (Root, "list") => List,
             (Root, "kill") => Kill,
@@ -145,11 +148,11 @@ impl Level {
     }
 
     fn instance_selection(self) -> bool {
-        matches!(self, Level::Log | Level::Errors | Level::Frames | Level::Kill | Level::Ipc | Level::Msg)
+        matches!(self, Level::Log | Level::Errors | Level::Frames | Level::Memory | Level::Kill | Level::Ipc | Level::Msg)
     }
 
     fn logging(self) -> bool {
-        matches!(self, Level::Root | Level::Check | Level::Errors | Level::Frames | Level::Log | Level::List | Level::Kill | Level::Ipc | Level::Msg)
+        matches!(self, Level::Root | Level::Check | Level::Errors | Level::Frames | Level::Memory | Level::Log | Level::List | Level::Kill | Level::Ipc | Level::Msg)
     }
 
     fn config_selection(self) -> bool {
@@ -289,7 +292,7 @@ impl Parser {
             return Ok(());
         }
         let max = match self.level {
-            Level::Log => 1,
+            Level::Log | Level::Memory => 1,
             Level::IpcCall | Level::Msg => usize::MAX,
             Level::IpcWait | Level::IpcListen | Level::PropGet | Level::Frames => 2,
             _ => 0,
@@ -344,6 +347,12 @@ impl Parser {
             Level::Check => Command::Check,
             Level::Errors => Command::Errors { follow: self.log_follow, static_check: self.static_check },
             Level::Frames => Command::Frames { action: Some(next()).filter(|a| !a.is_empty()).unwrap_or_else(|| "stats".into()), arg: next() },
+            // Answered by the same runtime hook as the frame meter.
+            Level::Memory => match next().as_str() {
+                "" => Command::Frames { action: "memory".into(), arg: String::new() },
+                "reclaim" => Command::Frames { action: "memory".into(), arg: "reclaim".into() },
+                other => return Err(err(VALIDATION, format!("Unknown memory action: {other} (expected reclaim)"))),
+            },
             Level::Log => Command::Log {
                 file: Some(next()).filter(|f| !f.is_empty()),
                 tail: self.log_tail,
@@ -457,6 +466,7 @@ fn help(level: Level) -> String {
              ipc                     Communicate with other Quickshell instances.\n  \
              check                   Compile every QML file of the config and report errors (qs-rs).\n  \
              errors                  Warnings and errors of a running instance, grouped (qs-rs).\n  \
+             memory                  Where a running instance's memory sits (qs-rs).\n  \
              msg                     [DEPRECATED] Moved to `ipc call`.\n"
         ),
         Level::Log => format!(
@@ -484,6 +494,13 @@ fn help(level: Level) -> String {
         ),
         Level::Msg => format!("qs msg [OPTIONS] TARGET FUNCTION [ARGS...]\n\n  -s, --show              Print information about a function or target.\n\n{INSTANCE}\n{CONFIG}{FILTER}"),
         Level::Check => format!("qs check [OPTIONS]\n\n{CONFIG}"),
+        Level::Memory => format!(
+            "qs memory [OPTIONS] [reclaim]\n\n  \
+             Where the instance's memory sits: process and allocator, live objects by the file\n  \
+             that made them, and the images and offscreen layers they hold (upper bounds).\n\n  \
+             reclaim                 Run a reclaim pass first (JS GC, unused components, purge).\n\n\
+             {INSTANCE}\n{CONFIG}{FILTER}"
+        ),
         Level::Frames => format!(
             "qs frames [OPTIONS] [ACTION [FILE]]\n\n  \
              The instance's frame meter: per window, frame cost and its stages (polish, sync,\n  \
@@ -554,6 +571,9 @@ mod tests {
         assert!(c.no_duplicate && c.daemonize && c.path.as_deref() == Some("/a"));
         assert_eq!(p("errors --static -f").unwrap().cmd, Command::Errors { follow: true, static_check: true });
         assert_eq!(p("errors").unwrap().cmd, Command::Errors { follow: false, static_check: false });
+        assert_eq!(p("memory").unwrap().cmd, Command::Frames { action: "memory".into(), arg: String::new() });
+        assert_eq!(p("memory reclaim").unwrap().cmd, Command::Frames { action: "memory".into(), arg: "reclaim".into() });
+        assert!(p("memory everything").is_err());
         assert!(p("check --static").is_err());
         assert_eq!(p("log -t 5 -f").unwrap().cmd, Command::Log { file: None, tail: 5, follow: true, rules: String::new() });
     }
