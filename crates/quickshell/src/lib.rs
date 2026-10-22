@@ -2,6 +2,7 @@ pub mod colorquantizer;
 pub mod common;
 pub mod datastream;
 pub mod desktopentry;
+pub mod errorlog;
 pub mod global;
 pub mod icons;
 pub mod instance;

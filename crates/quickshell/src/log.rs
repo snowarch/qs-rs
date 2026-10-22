@@ -536,6 +536,7 @@ pub fn emit(level: Level, category: &str, body: String) {
     let mut l = logger().lock().unwrap();
     let shown = l.filter(category).shows(level);
     let m = Message { level, category: category.to_string(), body, time: now_ms() };
+    crate::errorlog::feed(&m);
     if shown {
         let line = format(&m, l.color, l.timestamps, "");
         let mut out = std::io::stdout().lock();
@@ -560,6 +561,7 @@ fn log_qt_message(kind: i32, category: &str, body: &str) {
     }
     let mut l = logger().lock().unwrap();
     let m = Message { level, category: category.to_string(), body: body.to_string(), time: now_ms() };
+    crate::errorlog::feed(&m);
     let line = format(&m, l.color, l.timestamps, "");
     {
         let mut out = std::io::stdout().lock();

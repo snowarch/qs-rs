@@ -5,171 +5,12 @@
 //! the runtime, or the system around them. `--static` adds a child `check`, which compiles every
 //! QML file of the config, all families, without creating anything.
 
-use quickshell::log::{Level, Message};
-use std::collections::HashMap;
+pub use quickshell::errorlog::static_line;
+use quickshell::errorlog::{Kind, Owner, Report};
+use quickshell::log::Level;
+#[cfg(test)]
+use quickshell::log::Message;
 use std::path::Path;
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum Owner {
-    /// The shell's own code; the area is the folder under the shell dir (`modules/iris` reads
-    /// as `iris`), or `?` when the message names no file.
-    Shell(String),
-    Runtime,
-    System,
-}
-
-#[derive(Debug)]
-pub struct Kind {
-    pub owner: Owner,
-    pub level: Level,
-    pub count: usize,
-    /// Times seen in the current generation (since the last reload).
-    pub current: usize,
-    pub first: i64,
-    pub last: i64,
-    /// The latest message of this kind, as logged.
-    pub sample: String,
-    pub category: String,
-}
-
-#[derive(Default)]
-pub struct Report {
-    pub kinds: Vec<Kind>,
-    index: HashMap<String, usize>,
-    pub reloads: usize,
-    pub started: Option<i64>,
-}
-
-const RELOADING: &str = "Reloading configuration...";
-
-impl Report {
-    /// Takes one message; returns the index of its kind when it is the first of that kind.
-    pub fn add(&mut self, m: &Message, shell_dir: &str) -> Option<usize> {
-        self.started.get_or_insert(m.time);
-        if m.body == RELOADING {
-            self.reloads += 1;
-            for k in &mut self.kinds {
-                k.current = 0;
-            }
-            return None;
-        }
-        if m.level < Level::Warn {
-            return None;
-        }
-        let body = strip_ansi(&m.body);
-        let key = format!("{}|{}", m.category, normalize(&body));
-        if let Some(&i) = self.index.get(&key) {
-            let k = &mut self.kinds[i];
-            k.count += 1;
-            k.current += 1;
-            k.last = m.time;
-            k.sample = body;
-            return None;
-        }
-        self.kinds.push(Kind {
-            owner: owner(&m.category, &body, shell_dir),
-            level: m.level,
-            count: 1,
-            current: 1,
-            first: m.time,
-            last: m.time,
-            sample: body,
-            category: m.category.clone(),
-        });
-        self.index.insert(key, self.kinds.len() - 1);
-        Some(self.kinds.len() - 1)
-    }
-}
-
-pub fn strip_ansi(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\x1b' && chars.peek() == Some(&'[') {
-            for c in chars.by_ref() {
-                if c.is_ascii_alphabetic() {
-                    break;
-                }
-            }
-        } else {
-            out.push(c);
-        }
-    }
-    out
-}
-
-/// What stays the same between two messages of one kind: numbers, hex addresses and D-Bus
-/// unique names become `#`, so "instance_1_1388", "0x7f3a…" and ":1.234" never split a kind.
-pub fn normalize(body: &str) -> String {
-    let mut out = String::with_capacity(body.len());
-    let mut chars = body.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c.is_ascii_digit() {
-            // A hex literal or a run of digits (dots inside keep "1.234" whole).
-            if c == '0' && chars.peek() == Some(&'x') {
-                chars.next();
-                while chars.peek().is_some_and(|c| c.is_ascii_hexdigit()) {
-                    chars.next();
-                }
-            } else {
-                while chars.peek().is_some_and(|c| c.is_ascii_digit() || *c == '.') {
-                    chars.next();
-                }
-            }
-            out.push('#');
-        } else {
-            out.push(c);
-        }
-    }
-    out
-}
-
-/// The shell file a message points at, relative to the shell dir: from `file://` URLs or plain
-/// absolute paths in the body.
-pub fn shell_file<'a>(body: &'a str, shell_dir: &str) -> Option<&'a str> {
-    let dir = shell_dir.trim_end_matches('/');
-    let at = body.find(dir)?;
-    let rest = body[at + dir.len()..].trim_start_matches('/');
-    let end = rest.find(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == ')').unwrap_or(rest.len());
-    Some(&rest[..end])
-}
-
-pub fn owner(category: &str, body: &str, shell_dir: &str) -> Owner {
-    if let Some(file) = shell_file(body, shell_dir) {
-        let mut parts = file.split('/');
-        let area = match (parts.next(), parts.next()) {
-            (Some("modules"), Some(a)) if !a.contains('.') => a.to_string(),
-            (Some(top), Some(_)) => top.to_string(),
-            _ => "root".to_string(),
-        };
-        return Owner::Shell(area);
-    }
-    // Things the shell asked for that the machine doesn't have (a daemon that isn't installed or
-    // won't start): nothing either side can fix in code.
-    let system = ["Could not activate remote peer", "unit failed", "was not provided by any .service files"];
-    if system.iter().any(|s| body.contains(s)) {
-        return Owner::System;
-    }
-    if body.contains("qrc:/qt/qml/Quickshell") || category.starts_with("quickshell") || category.starts_with("qt.") {
-        return Owner::Runtime;
-    }
-    // A console.warn or an error from shell JavaScript without a location.
-    Owner::Shell("?".into())
-}
-
-/// One `check` line, `path:line:col: message`, as (area, text). Paths are relative to the shell.
-pub fn static_line(line: &str) -> Option<(String, String)> {
-    let (path, _) = line.split_once(".qml:")?;
-    if path.contains(' ') {
-        return None;
-    }
-    let area = owner("", &format!("/s/{line}"), "/s");
-    let area = match area {
-        Owner::Shell(a) => a,
-        _ => "?".into(),
-    };
-    Some((area, line.to_string()))
-}
 
 fn ago(now: i64, then: i64) -> String {
     let s = ((now - then) / 1000).max(0);
@@ -257,6 +98,7 @@ pub fn run(log: &Path, shell_dir: &str, follow: bool, static_lines: Option<(Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use quickshell::errorlog::{normalize, owner, RELOADING};
 
     fn msg(level: Level, cat: &str, body: &str) -> Message {
         Message { level, category: cat.into(), body: body.into(), time: 0 }

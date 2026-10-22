@@ -372,6 +372,9 @@ fn run_shell(cli: &cli::Cli, config: PathBuf, started: std::time::Instant) -> i3
         let _ = std::fs::create_dir_all(d);
     }
     quickshell::common::set_shell(info);
+    if !check {
+        quickshell::errorlog::set_root(&root_file);
+    }
     launch::apply_env(&pragmas);
     if let Some(dir) = cachesync::qt_cache_dir() {
         cachesync::init(dir);
