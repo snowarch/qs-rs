@@ -113,7 +113,7 @@ inir runs on it as a full daily session, all three families (ii, Waffle, iRiS).
 | Wayland: layer shell, session lock, toplevels, idle monitor, clipboard | done |
 | services: PipeWire, MPRIS, UPower, Bluetooth, NetworkManager, notifications, tray, Polkit, PAM | done |
 | Hyprland | IPC done; shortcuts and focus grab inert (unused on niri) |
-| `ScreencopyView` | screens done (wlr-screencopy, shared memory); live windows on niri, zero-copy (see below) |
+| `ScreencopyView` | screens done (wlr-screencopy, shared memory); live windows on niri, zero-copy, croppable (see below) |
 | `IdleInhibitor`, `DataStream`, `SocketServer`, widget wrappers | missing; inir doesn't use them |
 | I3/Sway, Greetd, X11 | out of scope |
 
@@ -124,6 +124,12 @@ Window previews are live, not screenshots: `ScreencopyView { niriWindowId: id }`
 asks niri's ScreenCast for that one window and draws the PipeWire dmabuf frames as GPU textures,
 no copy on the way. niri keeps a recording whose client died, so qs-rs stops its own on exit and
 sweeps what a killed shell left behind.
+
+Any rectangle of that window works too: `sourceRect` (buffer pixels, `sourceSize` is the whole
+window) only changes which texels get sampled, so a cropped view costs what a whole one does
+(0.63 vs 0.68 ms of CPU per frame, same GPU load, measured 2026-10-22). Set `sourceRectBase` to the
+size it was picked on and a resize keeps it in place: each edge sticks to the nearer window side,
+so a sidebar stays a sidebar and the status line stays at the bottom.
 
 When it does crash, it says where: a fatal signal prints the native backtrace and then the QML
 stack of every engine, `file.qml:line` included, even halfway through a reload.

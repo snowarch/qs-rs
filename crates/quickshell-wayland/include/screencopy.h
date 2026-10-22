@@ -1,7 +1,7 @@
 #pragma once
 // ScreencopyView's drawing half: shows the QImage frames the Rust capture (screencopy.rs) hands
 // over, placed like upstream's WlBufferQSGDisplayNode (buffer transform applied around the
-// item's center, aspect kept, centered).
+// item's center, aspect kept, centered). A source rect only changes which texels get sampled.
 #include <QtCore/QObject>
 #include <QtGui/QImage>
 #include <QtGui/QMatrix4x4>
@@ -10,13 +10,15 @@
 #include <QtQuick/QQuickWindow>
 #include <QtQuick/QSGImageNode>
 #include <QtQuick/QSGTransformNode>
-
+#include "quickshell_wayland/include/crop.h"
 
 class QsScreencopyItem: public QQuickItem {
 	Q_OBJECT;
 	Q_PROPERTY(QImage image READ image WRITE setImage NOTIFY imageChanged);
 	/// wl_output transform of the buffer (upstream's WlBufferTransform).
 	Q_PROPERTY(int bufferTransform READ bufferTransform WRITE setBufferTransform NOTIFY bufferTransformChanged);
+	/// The part shown, in transformed (sourceSize) pixels; empty shows all of it.
+	Q_PROPERTY(QRectF sourceRect READ sourceRect WRITE setSourceRect NOTIFY sourceRectChanged);
 	QML_NAMED_ELEMENT(QsScreencopyItem);
 
 public:
@@ -40,9 +42,22 @@ public:
 		emit this->bufferTransformChanged();
 	}
 
+	[[nodiscard]] QRectF sourceRect() const { return this->mSourceRect; }
+	void setSourceRect(const QRectF& rect) {
+		if (rect == this->mSourceRect) return;
+		this->mSourceRect = rect;
+		this->update();
+		emit this->sourceRectChanged();
+	}
+
+	Q_INVOKABLE static QRectF bufferRect(const QRectF& view, const QSizeF& buffer, int transform) {
+		return qscrop::toBuffer(view, buffer, transform);
+	}
+
 signals:
 	void imageChanged();
 	void bufferTransformChanged();
+	void sourceRectChanged();
 
 protected:
 	QSGNode* updatePaintNode(QSGNode* oldNode, UpdatePaintNodeData* /*unused*/) override {
@@ -81,7 +96,10 @@ protected:
 		matrix.translate(static_cast<float>(-center.x()), static_cast<float>(-center.y()));
 
 		auto viewRect = matrix.mapRect(rect);
-		auto bufferSize = QSizeF(this->mImage.size());
+		auto source = QRectF(QPointF(), QSizeF(this->mImage.size()));
+		if (!this->mSourceRect.isEmpty()) source = qscrop::toBuffer(this->mSourceRect, source.size(), this->mTransform) & source;
+		imageNode->setSourceRect(source);
+		auto bufferSize = source.size();
 		bufferSize.scale(viewRect.width(), viewRect.height(), Qt::KeepAspectRatio);
 		imageNode->setRect(
 		    viewRect.x() + viewRect.width() / 2 - bufferSize.width() / 2,
@@ -98,4 +116,5 @@ private:
 	QImage mImage;
 	bool mNewImage = false;
 	int mTransform = 0;
+	QRectF mSourceRect;
 };

@@ -16,6 +16,7 @@
 #include <QtQuick/QSGImageNode>
 #include <QtQuick/qsgtexture_platform.h>
 #include "quickshell_wayland/include/dmabuf.h"
+#include "quickshell_wayland/include/crop.h"
 #include "quickshell_wayland/src/castffi.cxx.h"
 
 namespace qswindowcast {
@@ -67,6 +68,10 @@ class QsWindowCastItem: public QQuickItem {
 	Q_OBJECT;
 	/// QsWindowCapture.frames: where frames come from.
 	Q_PROPERTY(quint64 frames READ frames WRITE setFrames NOTIFY framesChanged);
+	/// ScreencopyView.sourceRect and the frame size it was picked on, mapped per frame (qscrop::map)
+	/// so a resize never shows one frame cropped for the old size.
+	Q_PROPERTY(QRectF sourceRect READ sourceRect WRITE setSourceRect NOTIFY sourceRectChanged);
+	Q_PROPERTY(QSizeF sourceRectBase READ sourceRectBase WRITE setSourceRectBase NOTIFY sourceRectBaseChanged);
 	QML_NAMED_ELEMENT(QsWindowCastItem);
 
 public:
@@ -89,8 +94,29 @@ public:
 		emit this->framesChanged();
 	}
 
+	[[nodiscard]] QRectF sourceRect() const { return this->mSourceRect; }
+	void setSourceRect(const QRectF& rect) {
+		if (rect == this->mSourceRect) return;
+		this->mSourceRect = rect;
+		this->update();
+		emit this->sourceRectChanged();
+	}
+	[[nodiscard]] QSizeF sourceRectBase() const { return this->mSourceRectBase; }
+	void setSourceRectBase(const QSizeF& base) {
+		if (base == this->mSourceRectBase) return;
+		this->mSourceRectBase = base;
+		this->update();
+		emit this->sourceRectBaseChanged();
+	}
+
+	Q_INVOKABLE static QRectF mapCrop(const QRectF& rect, const QSizeF& base, const QSizeF& size) {
+		return qscrop::map(rect, base, size);
+	}
+
 signals:
 	void framesChanged();
+	void sourceRectChanged();
+	void sourceRectBaseChanged();
 
 protected:
 	void releaseResources() override { this->dropResources(); }
@@ -124,9 +150,12 @@ protected:
 			node->setFiltering(QSGTexture::Linear);
 		}
 		node->setTexture(current->second.sg);
+		// Only the sampled texels change: same fragments, same frame, nothing copied.
+		auto source = qscrop::map(this->mSourceRect, this->mSourceRectBase, QSizeF(this->mSize));
+		node->setSourceRect(source);
 
 		auto rect = this->boundingRect();
-		auto size = QSizeF(this->mSize);
+		auto size = source.size();
 		size.scale(rect.width(), rect.height(), Qt::KeepAspectRatio);
 		node->setRect(
 		    rect.x() + rect.width() / 2 - size.width() / 2,
@@ -225,5 +254,7 @@ private:
 	std::uint64_t mCurrent = 0;
 	bool mHasCurrent = false;
 	QSize mSize;
+	QRectF mSourceRect;
+	QSizeF mSourceRectBase;
 	bool mWarned = false;
 };

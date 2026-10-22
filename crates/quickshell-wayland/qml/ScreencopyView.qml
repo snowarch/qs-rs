@@ -20,7 +20,14 @@ Item {
         : _isWindow ? _window.bufferSize
         : (_capture.bufferTransform & 1) ? Qt.size(_capture.bufferSize.height, _capture.bufferSize.width)
         : _capture.bufferSize
-    // A nonzero side constrains the implicit size to it, keeping sourceSize's aspect ratio.
+    // qs-rs only (hasVersion feature "screencopy-source-rect"): the part of the frame to show, in
+    // pixels of a frame sourceRectBase big (the sourceSize it was picked on; empty = the current
+    // one). Empty shows it all. On a resize each edge keeps its distance to the nearer window side.
+    property rect sourceRect: Qt.rect(0, 0, 0, 0)
+    property size sourceRectBase: Qt.size(0, 0)
+    // sourceRect on the current frame: what is drawn and what the implicit size follows.
+    readonly property rect effectiveSourceRect: _windowItem.mapCrop(sourceRect, sourceRectBase, sourceSize)
+    // A nonzero side constrains the implicit size to it, keeping the shown part's aspect ratio.
     property size constraintSize: Qt.size(0, 0)
     signal stopped()
 
@@ -37,7 +44,7 @@ Item {
     // Upstream divides by the constraint for a single-sided one (height / width); this keeps the
     // aspect ratio, which is what the property is documented to do.
     readonly property size _implicit: {
-        const c = constraintSize, s = sourceSize
+        const c = constraintSize, s = Qt.size(effectiveSourceRect.width, effectiveSourceRect.height)
         if (c.width !== 0 && c.height !== 0) {
             if (s.width <= 0 || s.height <= 0) return Qt.size(0, 0)
             const k = Math.min(c.width / s.width, c.height / s.height)
@@ -69,6 +76,7 @@ Item {
         visible: !root._isWindow && root.hasContent
         image: _capture.frame
         bufferTransform: _capture.bufferTransform
+        sourceRect: root.sourceRect.width > 0 && root.sourceRect.height > 0 ? root.effectiveSourceRect : Qt.rect(0, 0, 0, 0)
     }
 
     QsWindowCapture {
@@ -87,5 +95,7 @@ Item {
         anchors.fill: parent
         visible: root._isWindow && root.hasContent
         frames: _window.frames
+        sourceRect: root.sourceRect
+        sourceRectBase: root.sourceRectBase
     }
 }
