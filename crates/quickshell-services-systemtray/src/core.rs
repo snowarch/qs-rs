@@ -189,6 +189,52 @@ impl Watcher {
     async fn status_notifier_host_unregistered(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
 }
 
+// A new watcher (the shell restarted) is an empty one, and many items (blueman, Electron apps) only register when
+// they start. Each one still on the bus is found where items live and registered again.
+async fn rediscover(conn: &zbus::Connection) {
+    let Ok(dbus) = zbus::fdo::DBusProxy::new(conn).await else { return };
+    let Ok(names) = dbus.list_names().await else { return };
+    let me = conn.unique_name().map(|n| n.to_string()).unwrap_or_default();
+    let names: Vec<String> = names.into_iter().map(|n| n.to_string()).collect();
+    // An item known by its well-known name is probed under it, never again under its owner's unique name.
+    let mut owners = std::collections::HashSet::new();
+    for name in names.iter().filter(|n| n.starts_with("org.kde.StatusNotifierItem-")) {
+        if let Ok(bus) = zbus::names::BusName::try_from(name.as_str()) {
+            if let Ok(owner) = dbus.get_name_owner(bus).await {
+                owners.insert(owner.to_string());
+            }
+        }
+    }
+    for name in names {
+        if name == me || owners.contains(&name) || !(name.starts_with(':') || name.starts_with("org.kde.StatusNotifierItem-")) {
+            continue;
+        }
+        let conn = conn.clone();
+        // One task per peer: a peer that never answers holds only its own probe.
+        spawn(async move {
+            let mut paths = vec!["/StatusNotifierItem".to_string(), "/org/blueman/sni".to_string()];
+            if let Ok(xml) = conn
+                .call_method(Some(name.as_str()), "/org/ayatana/NotificationItem", Some("org.freedesktop.DBus.Introspectable"), "Introspect", &())
+                .await
+                .and_then(|r| r.body().deserialize::<String>())
+            {
+                for node in xml.split("<node name=\"").skip(1).filter_map(|t| t.split('"').next()) {
+                    paths.push(format!("/org/ayatana/NotificationItem/{node}"));
+                }
+            }
+            for path in paths {
+                let id = conn
+                    .call_method(Some(name.as_str()), path.as_str(), Some("org.freedesktop.DBus.Properties"), "Get", &("org.kde.StatusNotifierItem", "Id"))
+                    .await;
+                if id.is_ok() {
+                    let item = format!("{name}{path}");
+                    let _ = conn.call_method(Some(WATCHER), WATCHER_PATH, Some(WATCHER), "RegisterStatusNotifierItem", &(item.as_str(),)).await;
+                }
+            }
+        });
+    }
+}
+
 async fn run_watcher() -> zbus::Result<()> {
     let watcher = Watcher::default();
     let (items, hosts) = (watcher.items.clone(), watcher.hosts.clone());
@@ -200,7 +246,9 @@ async fn run_watcher() -> zbus::Result<()> {
         spawn(async move {
             if let Err(e) = qs_dbus::claim_name(&conn, WATCHER, "SystemTray").await {
                 quickshell::qs_log!(warn, "quickshell.service.sni", "{e}");
+                return;
             }
+            rediscover(&conn).await;
         });
     }
     // Drop items and hosts whose service left the bus.

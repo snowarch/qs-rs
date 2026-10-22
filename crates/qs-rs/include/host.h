@@ -740,8 +740,10 @@ inline void watch_memory_peaks() {
 	if (PeakWatcher::instance == nullptr) PeakWatcher::instance = new PeakWatcher();
 }
 
+// Opt-in (QSRS_RECLAIM=1): dropping hidden windows' scenes, the component cache and the glyph caches made every
+// panel, tray menu and morph rebuild on its next show (a lost first frame, measured on the Control Center).
 inline void schedule_reclaim(QQmlEngine* engine) {
-	if (qEnvironmentVariableIntValue("QSRS_NO_RECLAIM") == 1) return;
+	if (qEnvironmentVariableIntValue("QSRS_RECLAIM") != 1) return;
 	new ReclaimWatcher(engine);
 }
 
