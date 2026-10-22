@@ -824,7 +824,9 @@ rust::String rescan_vfs() noexcept;
 class QsShell: public QObject {
 public:
 	QsShell(QQmlEngine* engine, QObject* root, QString importPath, QString entry)
-	    : engine(engine), root(root), importPath(std::move(importPath)), entry(std::move(entry)) {}
+	    : engine(engine), root(root), importPath(std::move(importPath)), entry(std::move(entry)) {
+		this->watch(engine);
+	}
 
 	void reload(bool hard) {
 		Q_UNUSED(hard); // every reload is a new generation; shown windows are carried over (QsWindowPool)
@@ -839,6 +841,25 @@ public:
 private:
 	static QObject* quickshell(QQmlEngine* engine) {
 		return engine == nullptr ? nullptr : engine->singletonInstance<QObject*>("Quickshell", "Quickshell");
+	}
+
+	// A generation where a component failed to load (a type unavailable, a property set twice) left its
+	// windows half built: reused by the next reload they kept a body with no content, no menus and no
+	// motion until a restart. Their windows are not carried over; the next generation builds its own.
+	// Loaders report these through the logger, not QQmlEngine::warnings.
+	static inline std::atomic<bool> broken {false};
+	void watch(QQmlEngine*) {
+		broken.store(false);
+		static QtMessageHandler chained = nullptr;
+		static bool installed = false;
+		if (installed) return;
+		installed = true;
+		chained = qInstallMessageHandler([](QtMsgType type, const QMessageLogContext& context, const QString& msg) {
+			if (type >= QtWarningMsg && (msg.contains(QLatin1String(" unavailable")) || msg.contains(QLatin1String("set multiple times"))
+			        || msg.contains(QLatin1String("is not a type")) || msg.contains(QLatin1String("is not installed"))))
+				broken.store(true);
+			if (chained) chained(type, context, msg);
+		});
 	}
 
 	void failed(const QString& error) {
@@ -867,7 +888,8 @@ private:
 
 		// Shown windows outlive the old generation, frozen on their last frame, for the new
 		// proxies to take back (QsWindowPool).
-		QsWindowPool::stash();
+		if (broken.load()) qInfo() << "Previous generation failed to load parts: its windows are rebuilt";
+		else QsWindowPool::stash();
 		// The old generation: root first (its children may still reach the engine), then the engine.
 		// No JS runs while it comes apart (upstream EngineGeneration::destroy): the engine marks
 		// its singletons deleted before deleting them, but not the parentless JS objects they
@@ -891,6 +913,7 @@ private:
 		delete this->engine;
 		qInstallMessageHandler(forward);
 		this->engine = next;
+		this->watch(next);
 
 		auto* root = component->create();
 		delete component;
