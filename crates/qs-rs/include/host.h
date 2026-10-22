@@ -18,6 +18,7 @@
 #include <QtCore/QChronoTimer>
 #include <QtCore/QElapsedTimer>
 #include <QtGui/QScreen>
+#include <QtGui/QFont>
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -30,6 +31,7 @@
 #include <csetjmp>
 #include <cstring>
 #include <unistd.h>
+#include <sys/mman.h>
 #include <QtQuick/QQuickItem>
 #include <QtQuick/QQuickWindow>
 #include <QtQml/QQmlContext>
@@ -374,6 +376,9 @@ inline QStringList census_lines() {
 	QStringList out;
 	QHash<QString, int> byFile;
 	QHash<QString, QPair<int, qint64>> images, layers;
+	// Live texts by family and weight: what keeps a font loaded (count, hidden, first file).
+	struct Face { int count = 0, hidden = 0; QString file; };
+	QHash<QString, Face> faces;
 	QSet<QObject*> seen;
 	std::function<void(QObject*)> walk = [&](QObject* o) {
 		if (!o || seen.contains(o)) return;
@@ -392,6 +397,13 @@ inline QStringList census_lines() {
 			auto& slot = (image ? images : layers)[file];
 			slot.first++;
 			slot.second += qint64(std::max(0, size.width())) * std::max(0, size.height()) * 4;
+		}
+		if (auto* item = qobject_cast<QQuickItem*>(o); item && (o->inherits("QQuickText") || o->inherits("QQuickTextInput") || o->inherits("QQuickTextEdit"))) {
+			auto font = o->property("font").value<QFont>();
+			auto& face = faces[QString("%1 %2").arg(font.family()).arg(font.weight())];
+			face.count++;
+			if (!item->isVisible()) face.hidden++;
+			if (face.file.isEmpty()) face.file = file;
 		}
 		for (auto* c: o->children()) walk(c);
 		if (auto* item = qobject_cast<QQuickItem*>(o)) for (auto* c: item->childItems()) walk(c);
@@ -424,11 +436,43 @@ inline QStringList census_lines() {
 		for (int i = 0; i < std::min<int>(12, heavy.size()) && heavy[i].first >= (1 << 20); i++)
 			out << QString::asprintf("qsrs-census %s %5lldMB %s", kind, (long long)(heavy[i].first >> 20), qPrintable(heavy[i].second));
 	}
+	QList<QPair<int, QString>> byFace;
+	for (auto it = faces.begin(); it != faces.end(); ++it)
+		byFace.append({it->count, QString::asprintf("%5d %s (%d hidden) first in %s", it->count, qPrintable(it.key()), it->hidden, qPrintable(it->file))});
+	std::sort(byFace.begin(), byFace.end(), [](auto& a, auto& b) { return a.first > b.first; });
+	out << QString::asprintf("qsrs-census fonts faces=%lld", (long long)byFace.size());
+	for (auto& [count, line]: byFace) out << "qsrs-census fonts " + line;
 	return out;
 }
 inline void print_census() {
 	for (auto& line: census_lines()) fprintf(stderr, "%s\n", qPrintable(line));
 }
+
+// A font file stays mapped while any text draws in it, and every outline a Design rasterized
+// keeps its pages in the shell (Material Symbols: 4.5 -> 12 MB after one AIRISU round trip).
+// Those glyphs sit in the glyph caches by then, so the pages of the read-only private font
+// mappings go back to the page cache; a new glyph faults its outline in again, from memory.
+inline void release_font_pages() {
+	FILE* f = fopen("/proc/self/maps", "r");
+	if (!f) return;
+	char line[4096];
+	while (fgets(line, sizeof line, f)) {
+		unsigned long start = 0, end = 0;
+		char perms[8] = {};
+		int path = 0;
+		if (sscanf(line, "%lx-%lx %7s %*s %*s %*s %n", &start, &end, perms, &path) < 3 || path == 0) continue;
+		if (strcmp(perms, "r--p") != 0) continue;
+		QByteArray file = QByteArray(line + path).trimmed();
+		static const char* fonts[] = {".ttf", ".otf", ".ttc", ".otc", ".pfb", ".woff", ".woff2"};
+		if (std::none_of(std::begin(fonts), std::end(fonts), [&](const char* ext) { return file.endsWith(ext); })) continue;
+		madvise(reinterpret_cast<void*>(start), end - start, MADV_DONTNEED);
+	}
+	fclose(f);
+}
+
+// quickshell/src/cpp/windowprivate.cpp: frees the glyph caches and fonts no text of a shown
+// window uses (declared here: window.h needs QtGui's semi-public include dir).
+void releaseUnusedGlyphCaches(QQuickWindow* window);
 
 // Memory goes back after surfaces close. Freed QML objects leave garbage in the JS heap until an
 // allocation-driven GC, and jemalloc keeps the freed pages dirty (its decay did not return them
@@ -436,13 +480,25 @@ inline void print_census() {
 // over start with the object count back at its start value. A hidden window starts two passes:
 // one at 6 s (the surface is gone) and one at 26 s (inir unloads closed panels ~20 s later).
 // Each pass: JS GC, unused compiled components, the scene graph's caches of hidden windows,
-// then a jemalloc purge. QSRS_NO_RECLAIM=1 turns it off (A/B).
+// then a jemalloc purge. Then what only a torn-down tree drew: glyph caches and font engines no
+// text uses (their font files unmap), and the pages of the fonts still in use go back to the
+// page cache (one AIRISU round trip kept ~36 MB of this). QSRS_NO_RECLAIM=1 turns all of it
+// off, QSRS_NO_FONT_RECLAIM=1 only the font part (A/B).
 inline void reclaim(QQmlEngine* engine) {
 	engine->collectGarbage();
 	engine->trimComponentCache();
 	for (auto* w: QGuiApplication::allWindows())
 		if (auto* qw = qobject_cast<QQuickWindow*>(w); qw && !qw->isVisible()) qw->releaseResources();
 	mallctl("arena.4096.purge", nullptr, nullptr, nullptr, 0);
+	if (qEnvironmentVariableIntValue("QSRS_NO_FONT_RECLAIM") == 1) return;
+	QFont::cleanup();
+	for (auto* w: QGuiApplication::allWindows())
+		if (auto* qw = qobject_cast<QQuickWindow*>(w)) releaseUnusedGlyphCaches(qw);
+	// The caches go on each render thread's next sync; their pages come back after it.
+	QTimer::singleShot(1000, qApp, [] {
+		release_font_pages();
+		mallctl("arena.4096.purge", nullptr, nullptr, nullptr, 0);
+	});
 }
 
 // Watches window Hide events and large teardowns (no polling: an idle shell is never woken for this).
