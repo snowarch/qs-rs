@@ -226,9 +226,13 @@ fn main() {
         std::process::exit(quickshell_services_pam::helper::main(&argv[2..]));
     }
     // Shells find their instance by process name (`pgrep -x qs`, inir's close-window.sh), as
-    // upstream's binary is `qs`. Threads started later inherit it. Mesa app profiles match the
-    // executable name, not this.
-    let _ = std::fs::write("/proc/self/comm", "qs");
+    // upstream's binary is `qs`: the cargo artifact `qs-rs` answers to it. A link of another name
+    // keeps its own (inir runs the shell as `inir-shell`, out of CachyOS's ananicy rule that nices
+    // every `qs` to 10). Threads started later inherit it. Mesa app profiles match the executable
+    // name, not this.
+    if std::fs::read_to_string("/proc/self/comm").is_ok_and(|c| c.trim() == "qs-rs") {
+        let _ = std::fs::write("/proc/self/comm", "qs");
+    }
     let cli = match cli::parse(argv.into_iter().skip(1)) {
         Ok(c) => c,
         Err(cli::Exit { code: 0, text }) => {
