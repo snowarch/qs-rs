@@ -5,6 +5,7 @@
 #include <QtCore/QHash>
 #include <QtCore/QObject>
 #include <QtCore/QPointer>
+#include <QtCore/QThread>
 #include <QtGui/QRegion>
 #include <QtGui/QWindow>
 #include <QtGui/QPlatformSurfaceEvent>
@@ -134,6 +135,9 @@ public:
 		window->installEventFilter(this);
 		QObject::connect(window, &QWindow::visibleChanged, this, &BackgroundEffect::onWindowVisibleChanged);
 		QObject::connect(window, &QQuickWindow::afterAnimating, this, &BackgroundEffect::onBeforeFrame);
+		// Where the scene graph syncs on this thread (qs-rs's shared basic loop) the region is sent there, after every
+		// afterAnimating handler: a table published from one (the iRiS Island flushes its bodies there) is in that frame.
+		QObject::connect(window, &QQuickWindow::beforeSynchronizing, this, &BackgroundEffect::onSync, Qt::DirectConnection);
 		QObject::connect(window, &QWindow::screenChanged, this, &BackgroundEffect::updateBlurRegion);
 		this->onWindowVisibleChanged();
 	}
@@ -189,6 +193,17 @@ private:
 	// GUI thread, after animations and before the scene graph sync of the next frame: the
 	// region request is double buffered and commits with that frame's wl_surface.commit.
 	void onBeforeFrame() {
+		if (this->syncsHere) return;
+		this->send();
+	}
+
+	void onSync() {
+		if (QThread::currentThread() != this->thread()) return;
+		this->syncsHere = true;
+		this->send();
+	}
+
+	void send() {
 		if (this->surface == nullptr || !this->pending) return;
 		this->pending = false;
 		if (!qsbe::holds(this->wlSurface, this)) return;
@@ -264,4 +279,5 @@ private:
 	ext_background_effect_surface_v1* surface = nullptr;
 	wl_surface* wlSurface = nullptr;
 	bool pending = false;
+	bool syncsHere = false;
 };
