@@ -54,6 +54,15 @@ public:
 	/// Whether the pixel at (x, y) is in the region a build gives now (tests).
 	Q_INVOKABLE bool holds(int x, int y) const { return this->build().contains(QPoint(x, y)); }
 
+	/// One row of that region, '1' held and '0' free (tests).
+	Q_INVOKABLE QString row(int y) const {
+		QRegion region = this->build();
+		QString out(int(std::round(this->mWidthF)), QChar('0'));
+		for (int x = 0; x < out.size(); ++x)
+			if (region.contains(QPoint(x, y))) out[x] = QChar('1');
+		return out;
+	}
+
 	[[nodiscard]] QRegion build() const override {
 		QElapsedTimer timer;
 		timer.start();
@@ -113,16 +122,22 @@ private:
 		return cutBox(px, py, b.cx, b.cy, b.hx, b.hy, this->mChamfer, b.r < -0.5 ? b.r : 0.0);
 	}
 
+	// How far the side bands swell at a row, 0..1 of their reach (IrisField.frag's alongY), kept for the row.
+	[[nodiscard]] double sideSwell(double py) const {
+		if (py != this->alongRow) {
+			double t = this->mWaveClock;
+			this->alongRow = py;
+			this->alongY = 0.60 + 0.24 * std::sin(py * 0.011 + t) + 0.16 * std::sin(py * 0.027 - t * 1.4);
+		}
+		return this->alongY;
+	}
+
 	[[nodiscard]] double frameDistance(double px, double py) const {
 		double w = this->mWidthF, h = this->mHeightF, band = this->mBand;
 		double lx = band, ly = band, hx = w - band, hy = h - band;
 		if (this->waving) {
 			double t = this->mWaveClock;
-			if (py != this->alongRow) {
-				this->alongRow = py;
-				this->alongY = 0.60 + 0.24 * std::sin(py * 0.011 + t) + 0.16 * std::sin(py * 0.027 - t * 1.4);
-			}
-			double alongY = this->alongY;
+			double alongY = this->sideSwell(py);
 			double alongX = 0.60 + 0.24 * std::sin(px * 0.009 - t) + 0.16 * std::sin(px * 0.023 + t * 1.2);
 			lx += this->mWave.x() * alongY;
 			ly += this->mWave.y() * alongX;
@@ -207,20 +222,42 @@ private:
 		};
 		const double inset = this->mInset;
 		this->alongRow = -1;
-		// Rows that cross only the band's straight sides are all alike: past the opening's corners, with nothing moving
-		// it, one traced row stands for the rest.
+		// Rows that cross only the band's straight sides, past the opening's corners (and past the top and bottom swell),
+		// hold what lies outside the box's sides: still, one traced row stands for the rest; waving, each row is its
+		// sides' swell, read straight off the distance (tracing all 1080 rows cost ~4.8 ms a frame while music played).
 		double corner = this->mChamfer > 0.0 ? this->mCorner : this->mCorner * 1.8409;
-		int plainFrom = int(std::ceil(this->mBand + corner + 2)), plainTo = int(std::floor(height - this->mBand - corner - 2));
+		double swellTop = this->waving ? this->mWave.y() : 0.0, swellBottom = this->waving ? this->mWave.w() : 0.0;
+		int plainFrom = int(std::ceil(this->mBand + swellTop + corner + 2));
+		int plainTo = int(std::floor(height - this->mBand - swellBottom - corner - 2));
+		bool straight = !this->waving || (this->mWave.y() <= 0.01f && this->mWave.w() <= 0.01f);
 		bool lastPlain = false;
 		for (int y = 0; y < height; ++y) {
 			double cy = y + 0.5;
 			active.clear();
 			for (int i = 0; i < count; ++i)
 				if (this->parsed[i].top <= cy && this->parsed[i].bottom >= cy) active.push_back(i);
-			bool plain = this->mFramed && !this->waving && active.empty() && y >= plainFrom && y < plainTo;
-			if (plain && lastPlain) continue;
+			bool plain = this->mFramed && active.empty() && y >= plainFrom && y < plainTo;
+			if (plain && !this->waving && lastPlain) continue;
 			lastPlain = plain;
 			spans.clear();
+			if (plain && this->waving) {
+				double alongY = this->sideSwell(cy);
+				double lx = this->mBand + this->mWave.x() * alongY, hx = this->mWidthF - this->mBand - this->mWave.z() * alongY;
+				// Held where the centre lies `inset` outside a side: x + 0.5 < lx - inset, x + 0.5 > hx + inset.
+				int a = std::clamp(int(std::ceil(lx - inset - 0.5)), 0, width);
+				int b = std::clamp(int(std::floor(hx + inset - 0.5)) + 1, 0, width);
+				if (a >= b) spans.emplace_back(0, width);
+				else {
+					if (a > 0) spans.emplace_back(0, a);
+					if (b < width) spans.emplace_back(b, width);
+				}
+				if (spans != previous) {
+					flushBand(y);
+					previous = spans;
+					bandTop = y;
+				}
+				continue;
+			}
 			auto trace = [&](int from, int to) {
 				int x = from;
 				while (x < to) {
@@ -236,7 +273,29 @@ private:
 					x = end;
 				}
 			};
-			if (this->mFramed) trace(0, width);
+			if (this->mFramed && straight) {
+				// Between the opening's corners and away from every body the band is straight, so a row holds all of
+				// that stretch or none of it: one distance answers it, only corners and bodies are traced.
+				double swell = this->waving ? this->sideSwell(cy) : 0.0;
+				double lx = this->mBand + this->mWave.x() * swell, hx = this->mWidthF - this->mBand - this->mWave.z() * swell;
+				std::vector<std::pair<int, int>> ranges {
+				    {0, std::clamp(int(std::ceil(lx + corner + 2)), 0, width)},
+				    {std::clamp(int(std::floor(hx - corner - 2)), 0, width), width}};
+				for (int i: active)
+					ranges.emplace_back(std::clamp(int(std::floor(this->parsed[i].left)), 0, width), std::clamp(int(std::ceil(this->parsed[i].right)), 0, width));
+				std::sort(ranges.begin(), ranges.end());
+				int done = 0;
+				for (auto& r: ranges) {
+					if (r.second <= done) continue;
+					int from = std::max(r.first, done);
+					if (from > done && this->frameDistance((done + from) * 0.5, cy) + inset < 0.0) {
+						if (!spans.empty() && spans.back().second == done) spans.back().second = from;
+						else spans.emplace_back(done, from);
+					}
+					trace(from, r.second);
+					done = r.second;
+				}
+			} else if (this->mFramed) trace(0, width);
 			else if (!active.empty()) {
 				std::vector<std::pair<int, int>> ranges;
 				for (int i: active) {
