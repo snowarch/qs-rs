@@ -99,7 +99,7 @@ pub const COMPAT_VERSION: (i32, i32) = (0, 3);
 /// Quickshell has no window capture there. "niri-window-capture": ScreencopyView.niriWindowId, a
 /// qs-rs property (a file that sets it fails to load anywhere else, so it gets its own name).
 /// "screencopy-source-rect": ScreencopyView.sourceRect, a live crop that follows window resizes.
-pub const FEATURES: &[&str] = &["webengine", "screencopy-luminance", "toplevel-capture", "niri-window-capture", "native-spring", "screencopy-source-rect"];
+pub const FEATURES: &[&str] = &["webengine", "screencopy-luminance", "toplevel-capture", "niri-window-capture", "native-spring", "screencopy-source-rect", "field-region"];
 
 #[derive(Default)]
 pub struct QuickshellGlobalRust {}

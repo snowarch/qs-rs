@@ -183,7 +183,8 @@ public:
 
 	[[nodiscard]] bool empty() const { return this->mItem == nullptr && this->mWidth == 0 && this->mHeight == 0; }
 
-	[[nodiscard]] QRegion build() const {
+	// Virtual: FieldRegion (fieldregion.h) rasterises its own shape.
+	[[nodiscard]] virtual QRegion build() const {
 		auto type = this->mShape == RegionShape::Ellipse ? QRegion::Ellipse : QRegion::Rectangle;
 		QRegion region;
 		if (this->empty()) {
