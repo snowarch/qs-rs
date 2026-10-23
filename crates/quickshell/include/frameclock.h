@@ -23,4 +23,8 @@ inline qint64 period_ns = 0;
 /// Whether the window has asked for a frame it has not got yet (QWindow::requestUpdate),
 /// read from QWindowPrivate (src/cpp/windowprivate.cpp).
 bool update_pending(QWindow* window);
+
+/// Whether a drawable QQuickWindow holds dirtied items or items waiting for polish: a frame it
+/// needs, asked for or not (src/cpp/windowprivate.cpp).
+bool scene_waits(QWindow* window);
 } // namespace qsrs::frameclock

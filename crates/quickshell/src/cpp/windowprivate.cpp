@@ -63,4 +63,11 @@ void releaseUnusedGlyphCaches(QQuickWindow* window) {
 }
 
 bool frameclock::update_pending(QWindow* window) { return QWindowPrivate::get(window)->updateRequestPending; }
+
+bool frameclock::scene_waits(QWindow* window) {
+	auto* qw = qobject_cast<QQuickWindow*>(window);
+	if (!qw) return false;
+	auto* d = QQuickWindowPrivate::get(qw);
+	return d->updatesEnabled && d->isRenderable() && (d->dirtyItemList || !d->itemsToPolish.isEmpty());
+}
 } // namespace qsrs

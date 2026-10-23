@@ -11,6 +11,7 @@
 #include <QtCore/QJsonDocument>
 #include <QtCore/QJsonObject>
 #include <QtCore/QPointer>
+#include <QtCore/QSet>
 #include <QtCore/QThread>
 #include <QtCore/QTimer>
 #include <QtGui/QGuiApplication>
@@ -284,6 +285,39 @@ private:
 	QTimer flush;
 	QHash<QQuickWindow*, Win> wins;
 	qint64 since = 0, ticks = 0, tickNs = 0;
+};
+
+// The basic render loop drops every update asked for while any window polishes
+// (QSGGuiThreadRenderLoop::maybeUpdate returns on m_inPolish, Qt 6.12): it takes the request
+// for the window being polished, but one window's relayout often changes another's scene (a
+// side panel growing in its own surface while the iRiS chassis draws its body). That window is
+// left dirty with no frame coming, and stays stale until something else wakes it. Right after
+// each window's polish (afterAnimating), any other drawable window with dirtied items and no
+// request pending gets its frame asked for again.
+class PolishRelay: public QObject {
+public:
+	explicit PolishRelay(QObject* parent): QObject(parent) { qApp->installEventFilter(this); }
+
+	bool eventFilter(QObject* watched, QEvent* event) override {
+		if (event->type() == QEvent::UpdateRequest && watched->isWindowType()) {
+			if (auto* w = qobject_cast<QQuickWindow*>(watched); w && !this->hooked.contains(w)) {
+				this->hooked.insert(w);
+				QObject::connect(w, &QQuickWindow::afterAnimating, this, [this, w] { this->relay(w); }, Qt::DirectConnection);
+				QObject::connect(w, &QObject::destroyed, this, [this, w] { this->hooked.remove(w); });
+			}
+		}
+		return false;
+	}
+
+private:
+	void relay(QQuickWindow* polished) {
+		for (auto* w: QGuiApplication::topLevelWindows()) {
+			if (w == polished || fc::update_pending(w) || !fc::scene_waits(w)) continue;
+			w->requestUpdate();
+		}
+	}
+
+	QSet<QQuickWindow*> hooked;
 };
 
 // The basic render loop installs no animation driver, so QML animations would step on

@@ -293,6 +293,7 @@ inline void configure_app(const QString& appId, bool nativeTextRendering) {
 		(new DisplayAnimationDriver(qApp))->install();
 	}
 	if (qEnvironmentVariableIsSet("QSRS_FRAME_LOG")) FrameMeter::get();
+	new PolishRelay(qApp);
 }
 
 QString memory_report(bool reclaimFirst);
