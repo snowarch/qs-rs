@@ -187,13 +187,11 @@ pub fn run(emit: impl Fn(Update) + 'static, commands: pw::channel::Receiver<Comm
                     let listener = device
                         .add_listener_local()
                         .param(move |_seq, kind, _index, _next, param| {
-                            if kind == ParamType::Route {
-                                if let Some((dev, index)) = param.and_then(parse_route) {
-                                    if let Some(d) = st2.borrow_mut().devices.get_mut(&id) {
+                            if kind == ParamType::Route
+                                && let Some((dev, index)) = param.and_then(parse_route)
+                                    && let Some(d) = st2.borrow_mut().devices.get_mut(&id) {
                                         d.routes.insert(dev, index);
                                     }
-                                }
-                            }
                         })
                         .register();
                     device.subscribe_params(&[ParamType::Route]);

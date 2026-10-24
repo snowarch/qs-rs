@@ -133,8 +133,8 @@ impl qobject::IdleMonitor {
             n.destroy();
         }
         let (enabled, timeout, mut respect, generation) = (rust.enabled, rust.timeout, rust.respect_inhibitors, rust.generation);
-        if enabled {
-            if let Some(g) = globals() {
+        if enabled
+            && let Some(g) = globals() {
                 let ms = (timeout * 1000.0).max(0.0) as u32;
                 if !respect && g.notifier.version() < 2 {
                     quickshell::qs_log!(warn, "quickshell.wayland.idle_notify", "Cannot ignore inhibitors for new idle notifier: Compositor does not support protocol version 2.");
@@ -150,7 +150,6 @@ impl qobject::IdleMonitor {
                     let _ = c.flush();
                 }
             }
-        }
         self.set_idle(false);
     }
 }

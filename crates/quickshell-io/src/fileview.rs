@@ -267,15 +267,13 @@ pub fn write(path: &str, data: &[u8], atomic: bool, print: bool) -> State {
     };
     let p = Path::new(path);
     state.exists = p.exists();
-    if !state.exists {
-        if let Some(dir) = p.parent() {
-            if std::fs::create_dir_all(dir).is_err() {
+    if !state.exists
+        && let Some(dir) = p.parent()
+            && std::fs::create_dir_all(dir).is_err() {
                 warn("Could not create parent directories of file.");
                 state.error = 3;
                 return state;
             }
-        }
-    }
     let result = if atomic {
         let tmp = p.with_file_name(format!(".{}.qsrs-tmp", p.file_name().unwrap_or_default().to_string_lossy()));
         std::fs::write(&tmp, data).and_then(|_| std::fs::rename(&tmp, p)).inspect_err(|_| {

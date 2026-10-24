@@ -135,11 +135,10 @@ async fn run(conn: Connection, qt: Qt) -> zbus::Result<()> {
 
     let dbus = zbus::fdo::DBusProxy::new(&conn).await?;
     for name in dbus.list_names().await? {
-        if name.starts_with(PREFIX) {
-            if let Ok(owner) = dbus.get_name_owner(name.as_ref()).await {
+        if name.starts_with(PREFIX)
+            && let Ok(owner) = dbus.get_name_owner(name.as_ref()).await {
                 add_player(conn.clone(), qt.clone(), owners.clone(), name.to_string(), owner.to_string());
             }
-        }
     }
 
     {

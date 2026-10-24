@@ -240,7 +240,6 @@ impl qobject::PolkitAgentBase {
         let identity = &active.request.identities[active.selected];
         if identity.group {
             // The helper authenticates users only (libpolkit-agent: "Unsupported identity type").
-            drop(this);
             return self.supplementary(QString::from("Cannot authenticate as a group"), true);
         }
         let emit = move |event| {
@@ -250,7 +249,6 @@ impl qobject::PolkitAgentBase {
             Ok(session) => active.session = Some(session),
             Err(e) => {
                 quickshell::qs_log!(warn, LOG, "Cannot spawn helper: {e}");
-                drop(this);
                 self.supplementary(QString::from(&format!("Cannot start authentication: {e}")), true);
             }
         }
@@ -322,7 +320,6 @@ impl qobject::PolkitAgentBase {
             return;
         }
         active.selected = index;
-        drop(this);
         self.start_session();
     }
 }

@@ -350,17 +350,16 @@ fn string_list(v: &QVariant) -> Option<Vec<String>> {
 
 /// Accepts either a command list or `{ command, environment, clearEnvironment, workingDirectory }`.
 pub fn context_from_variant(v: &QVariant) -> ExecArgs {
-    if let Some(map) = v.value::<QVariantMap>().filter(|m| m.len() > 0) {
+    if let Some(map) = v.value::<QVariantMap>().filter(|m| !m.is_empty()) {
         let mut out = ExecArgs { command: map.get(&QString::from("command")).and_then(|c| string_list(&c)), ..Default::default() };
-        if let Some(env) = map.get(&QString::from("environment")) {
-            if let Some(m) = env.value::<QVariantMap>() {
+        if let Some(env) = map.get(&QString::from("environment"))
+            && let Some(m) = env.value::<QVariantMap>() {
                 let mut hash = QHash::<QHashPair_QString_QVariant>::default();
                 for (k, v) in m.iter() {
                     hash.insert_clone(k, v);
                 }
                 out.environment = Some(hash);
             }
-        }
         out.clear_environment = map.get(&QString::from("clearEnvironment")).and_then(|b| b.value::<bool>());
         out.working_directory =
             map.get(&QString::from("workingDirectory")).and_then(|d| d.value::<QString>()).map(|d| d.to_string());

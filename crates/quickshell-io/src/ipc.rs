@@ -91,11 +91,10 @@ impl Drop for IpcHandlerRust {
 
 fn unregister(target: &str, id: u64) {
     let mut reg = REGISTRY.lock().unwrap();
-    if let Some(map) = reg.as_mut() {
-        if map.get(target).is_some_and(|(rid, _)| *rid == id) {
+    if let Some(map) = reg.as_mut()
+        && map.get(target).is_some_and(|(rid, _)| *rid == id) {
             map.remove(target);
         }
-    }
 }
 
 impl qobject::IpcHandler {
@@ -449,11 +448,10 @@ fn serve_commands(conn: u64, stream: &mut UnixStream) {
                 Command::Listen { target, signal } => listen(conn, stream, target, signal),
                 cmd => respond(cmd),
             };
-            if let Some(reply) = reply {
-                if stream.write_all(&reply).is_err() {
+            if let Some(reply) = reply
+                && stream.write_all(&reply).is_err() {
                     return;
                 }
-            }
         }
     }
 }

@@ -191,7 +191,7 @@ impl Dispatch<Handle, u32> for State {
             }
             handle_v1::Event::OutputLeave { output } => info.outputs.retain(|o| o != &output),
             handle_v1::Event::State { state } => {
-                let flags: Vec<u32> = state.chunks_exact(4).map(|c| u32::from_ne_bytes([c[0], c[1], c[2], c[3]])).collect();
+                let flags: Vec<u32> = state.as_chunks::<4>().0.iter().map(|c| u32::from_ne_bytes([c[0], c[1], c[2], c[3]])).collect();
                 let has = |s: handle_v1::State| flags.contains(&(s as u32));
                 info.activated = has(handle_v1::State::Activated);
                 info.maximized = has(handle_v1::State::Maximized);

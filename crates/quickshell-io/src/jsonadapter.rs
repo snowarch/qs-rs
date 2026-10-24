@@ -61,7 +61,7 @@ impl Default for JsonAdapterRust {
 impl cxx_qt::Initialize for qobject::JsonAdapter {
     fn initialize(self: Pin<&mut Self>) {
         // QML-declared properties exist once construction finishes; connect on the next turn.
-        let _ = self.qt_thread().queue(|this| qobject::json_connect_notifiers(this));
+        let _ = self.qt_thread().queue(qobject::json_connect_notifiers);
     }
 }
 

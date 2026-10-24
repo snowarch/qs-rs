@@ -185,13 +185,12 @@ pub fn parse_text(id: &str, text: &str) -> DesktopEntryData {
         };
         let (mut key, value) = (&line[..split], &line[split + 1..]);
         let mut locale = Locale::default();
-        if let Some(i) = key.find('[') {
-            if i != key.len() - 1 {
+        if let Some(i) = key.find('[')
+            && i != key.len() - 1 {
                 let end = if key.ends_with(']') { key.len() - 1 } else { key.len() };
                 locale = Locale::parse(&key[i + 1..end.max(i + 1)]);
                 key = &key[..i];
             }
-        }
         match entries.iter_mut().find(|(k, ..)| k == key) {
             Some(old) => {
                 let old_score = system.match_score(&old.1);
@@ -275,11 +274,10 @@ pub fn parse_exec_string(exec: &str) -> Vec<String> {
 pub fn desktop_paths() -> Vec<String> {
     let mut paths = Vec::new();
     let mut home = std::env::var("XDG_DATA_HOME").unwrap_or_default();
-    if home.is_empty() {
-        if let Ok(h) = std::env::var("HOME") {
+    if home.is_empty()
+        && let Ok(h) = std::env::var("HOME") {
             home = format!("{h}/.local/share");
         }
-    }
     if !home.is_empty() {
         paths.push(format!("{home}/applications"));
     }

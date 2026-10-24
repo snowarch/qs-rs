@@ -159,7 +159,7 @@ impl ShmBuffer {
         for row in 0..self.height as usize {
             let line = unsafe { std::slice::from_raw_parts(self.data.add(row * self.stride as usize), self.width as usize * 4) };
             let mut acc = 0u64;
-            for px in line.chunks_exact(4) {
+            for px in line.as_chunks::<4>().0 {
                 let v = u32::from_le_bytes([px[0], px[1], px[2], px[3]]);
                 acc += W[0] * ((v >> r) & mask) as u64 + W[1] * ((v >> g) & mask) as u64 + W[2] * ((v >> b) & mask) as u64;
             }

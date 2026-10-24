@@ -278,12 +278,11 @@ impl Parser {
     }
 
     fn positional(&mut self, word: String) -> Result<(), Exit> {
-        if self.positionals.is_empty() {
-            if let Some(sub) = self.level.subcommand(&word) {
+        if self.positionals.is_empty()
+            && let Some(sub) = self.level.subcommand(&word) {
                 self.level = sub;
                 return Ok(());
             }
-        }
         // qs-rs extension: `qs-rs file.qml` runs that file, as the QML tests do.
         if self.level == Level::Root && !self.seen.path && word.ends_with(".qml") {
             self.cli.path = Some(word);
@@ -318,11 +317,10 @@ impl Parser {
         if let (Some(i), Some(c)) = (s.instance, s.config) {
             return Err(err(EXCLUDES, format!("{i} excludes {c}")));
         }
-        if s.all {
-            if let Some(c) = s.config.filter(|c| ["--path", "--config", "--manifest"].contains(c)) {
+        if s.all
+            && let Some(c) = s.config.filter(|c| ["--path", "--config", "--manifest"].contains(c)) {
                 return Err(err(EXCLUDES, format!("--all excludes {c}")));
             }
-        }
         if s.file && (s.instance.is_some() || s.config.is_some()) {
             return Err(err(EXCLUDES, "file excludes instance and config selection"));
         }
@@ -450,7 +448,8 @@ fn help(level: Level) -> String {
         --log-times         Log timestamps with each message.\n      \
         --log-rules TEXT    Log rules to apply, in the format of QT_LOGGING_RULES.\n  \
         -v, --verbose           -v shows INFO, -vv DEBUG internal logs.\n";
-    let body = match level {
+    
+    match level {
         Level::Root => format!(
             "qs [OPTIONS] [SUBCOMMAND]\n\nOptions:\n  \
              -h, --help              Print this help message and exit.\n  \
@@ -519,8 +518,7 @@ fn help(level: Level) -> String {
              --static            Also compile every QML file of the config (all families, nothing shown).\n\n\
              {INSTANCE}\n{CONFIG}{FILTER}"
         ),
-    };
-    body
+    }
 }
 
 #[cfg(test)]

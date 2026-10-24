@@ -156,11 +156,10 @@ impl qobject::Process {
         rust.stdout = parser;
         let mut buf = std::mem::take(&mut rust.stdout_buf);
         self.as_mut().stdout_changed();
-        if !buf.is_empty() {
-            if let Some(p) = unsafe { Parser::from_ptr(parser) } {
+        if !buf.is_empty()
+            && let Some(p) = unsafe { Parser::from_ptr(parser) } {
                 p.feed(&mut buf, &[]);
             }
-        }
         self.as_mut().rust_mut().stdout_buf = buf;
     }
 
@@ -217,7 +216,7 @@ impl qobject::Process {
     }
 
     fn start_if_ready(mut self: Pin<&mut Self>) {
-        if self.pid.is_some() || !self.target_running || self.command.len() == 0 {
+        if self.pid.is_some() || !self.target_running || self.command.is_empty() {
             return;
         }
         let ctx = self.context();
@@ -306,7 +305,7 @@ impl qobject::Process {
         if let Some(dir) = ctx.working_directory {
             self.as_mut().set_working_directory(QString::from(dir.as_str()));
         }
-        if self.command.len() == 0 {
+        if self.command.is_empty() {
             quickshell::qs_log!(warn, "quickshell.io.process", "Cannot start process as command is empty.");
             return;
         }
@@ -326,7 +325,7 @@ impl qobject::Process {
     }
 
     fn start_detached(self: Pin<&mut Self>) {
-        if self.command.len() == 0 {
+        if self.command.is_empty() {
             quickshell::qs_log!(warn, "quickshell.io.process", "Cannot start process as command is empty.");
             return;
         }

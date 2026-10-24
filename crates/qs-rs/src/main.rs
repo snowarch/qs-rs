@@ -359,7 +359,7 @@ fn run_shell(cli: &cli::Cli, config: PathBuf, started: std::time::Instant) -> i3
                 if let Err(e) = quickshell::log::init_files(dir) {
                     eprintln!("Could not create the instance log files: {e}");
                 }
-                let _ = quickshell_io::ipc::FRAMES_HOOK.set(|action, arg| host::ffi::frames_command(action, arg));
+                let _ = quickshell_io::ipc::FRAMES_HOOK.set(host::ffi::frames_command);
                 quickshell_io::ipc::start_server(dir)
             }
             Err(e) => eprintln!("Could not create the instance runtime dir: {e}"),
@@ -422,13 +422,11 @@ fn run_shell(cli: &cli::Cli, config: PathBuf, started: std::time::Instant) -> i3
         let spec = std::env::var("QSRS_QML_DEBUG").ok()?;
         Some(spec.split_once(',').map_or((spec.clone(), false), |(p, m)| (p.to_string(), m == "block")))
     });
-    if let Some((port, block)) = debug {
-        if let Ok(port) = port.parse() {
-            if !host::ffi::start_qml_debug_server(port, block) {
+    if let Some((port, block)) = debug
+        && let Ok(port) = port.parse()
+            && !host::ffi::start_qml_debug_server(port, block) {
                 eprintln!("qs-rs: QML debug server failed on port {port}");
             }
-        }
-    }
     let engine = host::ffi::new_engine(&qstr(&vfs_root));
     if check {
         let code = check_shell(&scan, &vfs, unsafe { std::pin::Pin::new_unchecked(&mut *engine) });

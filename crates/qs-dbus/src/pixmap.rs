@@ -50,7 +50,7 @@ impl Pixmap {
         if w == 0 || h == 0 || data.len() < w * h * 4 {
             return None;
         }
-        let rgba = data[..w * h * 4].chunks_exact(4).flat_map(|p| [p[1], p[2], p[3], p[0]]).collect();
+        let rgba = data[..w * h * 4].as_chunks::<4>().0.iter().flat_map(|p| [p[1], p[2], p[3], p[0]]).collect();
         Some(Self { width: w, height: h, rowstride: w * 4, channels: 4, data: rgba })
     }
 
@@ -100,11 +100,10 @@ pub fn image_dir(kind: &str) -> PathBuf {
     if let Ok(entries) = std::fs::read_dir(&base) {
         for e in entries.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
-            if let Some(pid) = name.strip_prefix(kind).and_then(|r| r.strip_prefix('-')) {
-                if !Path::new("/proc").join(pid).exists() {
+            if let Some(pid) = name.strip_prefix(kind).and_then(|r| r.strip_prefix('-'))
+                && !Path::new("/proc").join(pid).exists() {
                     let _ = std::fs::remove_dir_all(e.path());
                 }
-            }
         }
     }
     base.join(format!("{kind}-{}", std::process::id()))

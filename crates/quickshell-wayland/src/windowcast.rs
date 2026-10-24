@@ -286,11 +286,10 @@ fn run(rx: pw::channel::Receiver<Cmd>) -> Result<(), pw::Error> {
                 }
             }
             Cmd::Release(id, key) => {
-                if let Some(entry) = entries.borrow().get(&id) {
-                    if let Some(buffer) = entry.held.borrow_mut().remove(&key) {
+                if let Some(entry) = entries.borrow().get(&id)
+                    && let Some(buffer) = entry.held.borrow_mut().remove(&key) {
                         unsafe { entry.stream.queue_raw_buffer(buffer) };
                     }
-                }
             }
             Cmd::Resume(id) => {
                 if let Some(entry) = entries.borrow().get(&id) {
@@ -459,7 +458,7 @@ fn open(core: &pw::core::CoreRc, id: u64, node: u32, frames: Arc<Frames>, live: 
                 state.pending = None;
             }
         })
-        .process(|stream, data| process(stream, data))
+        .process(process)
         .register()?;
     let formats: Vec<Vec<u8>> = [(spa::param::video::VideoFormat::BGRA, DRM_FORMAT_ARGB8888), (spa::param::video::VideoFormat::BGRx, DRM_FORMAT_XRGB8888)]
         .into_iter()
@@ -503,11 +502,10 @@ fn process(stream: &pw::stream::Stream, data: &mut StreamData) {
     let mut held = data.held.borrow_mut();
     held.insert(key, newest);
     // A frame nobody took yet is replaced: back to niri.
-    if let Some(old) = previous.filter(|old| *old != key) {
-        if let Some(buffer) = held.remove(&old) {
+    if let Some(old) = previous.filter(|old| *old != key)
+        && let Some(buffer) = held.remove(&old) {
             unsafe { stream.queue_raw_buffer(buffer) };
         }
-    }
     drop(held);
     data.frames.frame_arrived();
     if !data.live.load(Ordering::Acquire) {

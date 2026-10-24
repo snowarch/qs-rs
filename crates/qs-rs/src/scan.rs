@@ -79,11 +79,10 @@ impl Scan {
         names.sort();
         let mut entries = Vec::new();
         for name in &names {
-            if name.starts_with(|c: char| c.is_uppercase()) && name.ends_with(".qml") {
-                if let Some(info) = self.scan_file(&dir.join(name)) {
+            if name.starts_with(|c: char| c.is_uppercase()) && name.ends_with(".qml")
+                && let Some(info) = self.scan_file(&dir.join(name)) {
                     entries.push((name.clone(), info));
                 }
-            }
         }
         // A shell-provided qmldir wins; its files are still scanned for imports.
         if names.iter().any(|n| n == "qmldir") {
@@ -133,8 +132,8 @@ impl Scan {
                     if module.chars().all(|c| c == '.' || c.is_ascii_alphanumeric() || c == '_') {
                         imports.push(self.root.join(module.replace('.', "/")));
                     }
-                } else if let (Some(a), Some(b)) = (line.find('"'), line.rfind('"')) {
-                    if b > a + 1 {
+                } else if let (Some(a), Some(b)) = (line.find('"'), line.rfind('"'))
+                    && b > a + 1 {
                         let target = &line[a + 1..b];
                         let base = path.parent().unwrap();
                         imports.push(match target.strip_prefix("root:") {
@@ -154,7 +153,6 @@ impl Scan {
                         });
                         continue;
                     }
-                }
             } else if line.contains('{') {
                 break;
             }
@@ -170,11 +168,10 @@ impl Scan {
         }
         self.scan_dir(path.parent().unwrap());
         for import in imports {
-            if let Ok(dir) = import.canonicalize() {
-                if dir.is_dir() {
+            if let Ok(dir) = import.canonicalize()
+                && dir.is_dir() {
                     self.scan_dir(&dir);
                 }
-            }
         }
         Some(info)
     }

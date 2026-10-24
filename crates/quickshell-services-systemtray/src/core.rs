@@ -199,11 +199,10 @@ async fn rediscover(conn: &zbus::Connection) {
     // An item known by its well-known name is probed under it, never again under its owner's unique name.
     let mut owners = std::collections::HashSet::new();
     for name in names.iter().filter(|n| n.starts_with("org.kde.StatusNotifierItem-")) {
-        if let Ok(bus) = zbus::names::BusName::try_from(name.as_str()) {
-            if let Ok(owner) = dbus.get_name_owner(bus).await {
+        if let Ok(bus) = zbus::names::BusName::try_from(name.as_str())
+            && let Ok(owner) = dbus.get_name_owner(bus).await {
                 owners.insert(owner.to_string());
             }
-        }
     }
     for name in names {
         if name == me || owners.contains(&name) || !(name.starts_with(':') || name.starts_with("org.kde.StatusNotifierItem-")) {

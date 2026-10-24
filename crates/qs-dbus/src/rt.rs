@@ -69,11 +69,10 @@ fn run() {
             task.queued.store(false, Ordering::Release);
             let waker = Waker::from(task.clone());
             let mut slot = task.future.lock().unwrap();
-            if let Some(f) = slot.as_mut() {
-                if f.as_mut().poll(&mut Context::from_waker(&waker)).is_ready() {
+            if let Some(f) = slot.as_mut()
+                && f.as_mut().poll(&mut Context::from_waker(&waker)).is_ready() {
                     *slot = None;
                 }
-            }
         }
         cx.waker().wake_by_ref();
         Poll::Pending

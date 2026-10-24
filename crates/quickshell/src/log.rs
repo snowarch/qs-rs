@@ -276,17 +276,13 @@ impl Recent {
     }
 }
 
+#[derive(Default)]
 pub struct Encoder {
     categories: HashMap<String, u32>,
     recent: Recent,
     last_secs: i64,
 }
 
-impl Default for Encoder {
-    fn default() -> Self {
-        Self { categories: HashMap::new(), recent: Recent::default(), last_secs: 0 }
-    }
-}
 
 impl Encoder {
     pub fn header() -> [u8; 1] {
@@ -348,17 +344,13 @@ impl Encoder {
 }
 
 /// Reads messages back from a qslog byte stream.
+#[derive(Default)]
 pub struct Decoder {
     categories: Vec<(String, Filter)>,
     recent: Recent,
     last_secs: i64,
 }
 
-impl Default for Decoder {
-    fn default() -> Self {
-        Self { categories: Vec::new(), recent: Recent::default(), last_secs: 0 }
-    }
-}
 
 struct Cursor<'a>(&'a [u8], usize);
 
@@ -514,11 +506,10 @@ impl Logger {
             self.pending.push((m, shown));
             return;
         }
-        if shown {
-            if let Some(f) = self.text.as_mut() {
+        if shown
+            && let Some(f) = self.text.as_mut() {
                 let _ = writeln!(f, "{}", format(&m, false, true, ""));
             }
-        }
         if self.detailed.is_some() && (shown || !self.sparse) {
             let mut buf = Vec::new();
             let (rules, level) = (self.rules.clone(), self.default_level);

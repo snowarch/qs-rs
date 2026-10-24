@@ -196,11 +196,10 @@ impl Server {
         json.push_str(&format!(",\"expireTimeout\":{expire_timeout},\"image\":"));
         json_string(&image, &mut json);
         json.push('}');
-        if let Some(st) = self.state.lock().unwrap().as_mut() {
-            if st.live.contains_key(&id) {
+        if let Some(st) = self.state.lock().unwrap().as_mut()
+            && st.live.contains_key(&id) {
                 st.sent.insert(id, json.clone());
             }
-        }
         queue(&self.target, move |this| {
             this.notified(id, QString::from(&json));
             if let Some(f) = stale {
