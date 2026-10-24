@@ -1,7 +1,8 @@
 # Fonts no live text uses are unmapped after a big teardown in a shown window; fonts in use stay.
 # $1 = qs-rs, $2 = qml.
 nest=$(mktemp -d)
-out=$(QSRS_NEST_W=800 QSRS_NEST_H=600 QSRS_NEST_ROOT=$nest sh scripts/nested.sh $nest/shot.png 13 "$1" "$2" 2>&1)
+# reclaim is opt-in since 44003e1: the test turns on what it measures
+out=$(QSRS_EXTRA_ENV="QSRS_RECLAIM=1" QSRS_NEST_W=800 QSRS_NEST_H=600 QSRS_NEST_ROOT=$nest sh scripts/nested.sh $nest/shot.png 13 "$1" "$2" 2>&1)
 rm -rf "$nest"
 echo "$out" | grep "FONTS"
 shown=$(echo "$out" | grep "FONTS shown:")
