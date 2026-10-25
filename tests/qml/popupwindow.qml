@@ -51,6 +51,13 @@ ShellRoot {
             itemPopup.anchor.updateAnchor()
             const r = itemPopup.anchor._windowRect
             root.check("item rect " + r, r.x === 32 && r.y === 35 && r.width === 38 && r.height === 16)
+            // A rect set on an item anchor is the item's, mapped at once (a resize while shown looped the placement).
+            itemPopup.anchor.rect.width = 30
+            itemPopup.anchor.rect.height = 10
+            const m = itemPopup.anchor._windowRect
+            root.check("item rect set " + m, m.x === 32 && m.y === 35 && m.width === 28 && m.height === 6)
+            itemPopup.anchor.rect.width = 0
+            itemPopup.anchor.rect.height = 0
             // Item gone: no window either; setting a window drops the item (upstream setWindow).
             itemPopup.anchor.item = null
             root.check("no item, no window", itemPopup.anchor.window === null)

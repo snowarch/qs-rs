@@ -567,12 +567,7 @@ public:
 
 	// Re-maps an item anchor into its window, then lets the shell adjust (`anchoring`).
 	Q_INVOKABLE void updateAnchor() {
-		auto* content = mWindow ? mWindow->property("contentItem").value<QQuickItem*>() : nullptr;
-		if (mItem && content) {
-			auto user = mRect.qrect();
-			auto base = user.width() == 0 && user.height() == 0 ? mItem->boundingRect() : QRectF(user);
-			setWindowRect(content->mapFromItem(mItem, base.marginsRemoved(mMargins.qmargins())).toRect());
-		}
+		mapItemRect();
 		emit anchoring();
 	}
 
@@ -602,7 +597,20 @@ private:
 		return ((e & Qt::TopEdge) && (e & Qt::BottomEdge)) || ((e & Qt::LeftEdge) && (e & Qt::RightEdge));
 	}
 
-	void userRectChanged() { setWindowRect(mRect.qrect().marginsRemoved(mMargins.qmargins())); }
+	// With an item the rect is the item's: it lands mapped, or a resize while shown re-places the popup twice, the
+	// second time from inside the first (a binding loop on PopupWindow._placement).
+	void userRectChanged() {
+		if (!mapItemRect()) setWindowRect(mRect.qrect().marginsRemoved(mMargins.qmargins()));
+	}
+
+	bool mapItemRect() {
+		auto* content = mWindow ? mWindow->property("contentItem").value<QQuickItem*>() : nullptr;
+		if (!mItem || !content) return false;
+		auto user = mRect.qrect();
+		auto base = user.width() == 0 && user.height() == 0 ? mItem->boundingRect() : QRectF(user);
+		setWindowRect(content->mapFromItem(mItem, base.marginsRemoved(mMargins.qmargins())).toRect());
+		return true;
+	}
 
 	void setWindowRect(QRect rect) {
 		if (rect.width() <= 0) rect.setWidth(1);
