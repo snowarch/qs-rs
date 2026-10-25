@@ -61,8 +61,10 @@ use std::sync::{Mutex, mpsc};
 
 type Thread = CxxQtThread<qobject::IpcHandler>;
 
-/// target -> (registration id, handler thread handle)
-static REGISTRY: Mutex<Option<HashMap<String, (u64, Thread)>>> = Mutex::new(None);
+/// target -> every handler asking for it as (registration id, generation, thread); the first one answers.
+/// Upstream keeps a registry per engine generation and promotes the next known handler when one goes. With one
+/// registry here, a reload's new handler was refused while the old one lived and the target vanished with it.
+static REGISTRY: Mutex<Option<HashMap<String, Vec<(u64, u64, Thread)>>>> = Mutex::new(None);
 static NEXT_ID: Mutex<u64> = Mutex::new(0);
 
 pub struct IpcHandlerRust {
@@ -92,8 +94,11 @@ impl Drop for IpcHandlerRust {
 fn unregister(target: &str, id: u64) {
     let mut reg = REGISTRY.lock().unwrap();
     if let Some(map) = reg.as_mut()
-        && map.get(target).is_some_and(|(rid, _)| *rid == id) {
-            map.remove(target);
+        && let Some(known) = map.get_mut(target) {
+            known.retain(|(rid, _, _)| *rid != id);
+            if known.is_empty() {
+                map.remove(target);
+            }
         }
 }
 
@@ -124,13 +129,18 @@ impl qobject::IpcHandler {
             return;
         }
         {
+            let generation = quickshell::GENERATION.load(std::sync::atomic::Ordering::SeqCst);
             let mut reg = REGISTRY.lock().unwrap();
-            let map = reg.get_or_insert_with(HashMap::new);
-            if map.contains_key(&target) {
-                quickshell::qs_log!(warn, "quickshell.ipc", "target {target:?} is already registered, ignoring the duplicate.");
-                return;
+            let known = reg.get_or_insert_with(HashMap::new).entry(target.clone()).or_default();
+            match known.first() {
+                // a reload's handler takes over from the generation going away
+                Some((_, older, _)) if *older < generation => known.insert(0, (id, generation, self.qt_thread())),
+                Some(_) => {
+                    quickshell::qs_log!(warn, "quickshell.ipc", "target {target:?} is already registered, ignoring the duplicate.");
+                    known.push((id, generation, self.qt_thread()));
+                }
+                None => known.push((id, generation, self.qt_thread())),
             }
-            map.insert(target.clone(), (id, self.qt_thread()));
         }
         self.as_mut().rust_mut().registered = Some(target);
     }
@@ -142,6 +152,10 @@ static LISTENERS: Mutex<Vec<(u64, String, String, mpsc::Sender<String>)>> = Mute
 impl qobject::IpcHandler {
     fn signal_fired(&self, name: &QString, value: &QVariant, is_void: bool) {
         let Some(target) = self.registered.as_deref() else { return };
+        // only the handler answering for the target speaks for it
+        if handler_id(target) != Some(self.id) {
+            return;
+        }
         let value = if is_void { "void".to_string() } else { qobject::ipc_value_string(value).to_string() };
         let name = name.to_string();
         LISTENERS.lock().unwrap().retain(|(_, t, s, tx)| t != target || *s != name || tx.send(value.clone()).is_ok());
@@ -195,8 +209,12 @@ pub fn start_server(instance_dir: &Path) {
     });
 }
 
+fn handler_id(target: &str) -> Option<u64> {
+    REGISTRY.lock().unwrap().as_ref().and_then(|m| m.get(target).and_then(|known| known.first()).map(|(id, _, _)| *id))
+}
+
 fn handler_thread(target: &str) -> Option<Thread> {
-    REGISTRY.lock().unwrap().as_ref().and_then(|m| m.get(target).map(|(_, t)| t.clone()))
+    REGISTRY.lock().unwrap().as_ref().and_then(|m| m.get(target).and_then(|known| known.first()).map(|(_, _, t)| t.clone()))
 }
 
 /// Runs `f` on the handler's Qt thread and waits for its result; None if the target is gone.

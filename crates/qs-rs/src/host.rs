@@ -49,6 +49,7 @@ fn rescan_vfs() -> String {
     match crate::scan::Scan::new(root_file).and_then(|scan| scan.write_vfs(vfs).map(|()| scan)) {
         Ok(scan) => {
             crate::watchfiles::track(scan.hashes);
+            quickshell::GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             String::new()
         }
         Err(e) => format!("scan of {} failed: {e}", root_file.display()),
