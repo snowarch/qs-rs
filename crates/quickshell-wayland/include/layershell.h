@@ -99,6 +99,9 @@ public:
 		window->setProperty("_qsLayer", layer);
 		// The frame meter's name for the window (qs-rs/include/frames.h).
 		window->setProperty("_qsNamespace", scope);
+		// `qs ui` places the surface on its output from these (a client never learns where it is).
+		window->setProperty("_qsAnchors", anchors);
+		window->setProperty("_qsMargins", QVariantList { left, top, right, bottom });
 		ls->setAnchors(LayerShellQt::Window::Anchors(anchors));
 		ls->setLayer(LayerShellQt::Window::Layer(layer));
 		ls->setKeyboardInteractivity(LayerShellQt::Window::KeyboardInteractivity(keyboard));

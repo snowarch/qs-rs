@@ -50,6 +50,7 @@ QT_END_NAMESPACE
 #include "quickshell/include/windowpool.h"
 #include "quickshell/include/reload.h"
 #include "frames.h"
+#include "ui.h"
 
 // QtQml's debugger helper (extern "C", exported): the JS/QML call stack of a V4 engine as text,
 // read from the engine's own frame chain, so JIT frames the native unwinder stops at still show.
@@ -298,13 +299,19 @@ inline void configure_app(const QString& appId, bool nativeTextRendering) {
 
 QString memory_report(bool reclaimFirst);
 
-// `qs frames ...` and `qs memory [reclaim]` (sent as the frames action "memory"): runtime
+// `qs frames ...`, `qs memory [reclaim]` and `qs ui ...` (sent as the frames actions "memory", "ui"): runtime
 // commands answered on the GUI thread.
 inline rust::String frames_command(rust::Str action, rust::Str arg) {
 	if (action == rust::Str("memory")) {
 		QString out;
 		bool reclaimFirst = arg == rust::Str("reclaim");
 		QMetaObject::invokeMethod(qApp, [&] { out = memory_report(reclaimFirst); }, Qt::BlockingQueuedConnection);
+		return rust::String(out.toStdString());
+	}
+	if (action == rust::Str("ui")) {
+		QString out;
+		auto words = QString::fromUtf8(arg.data(), arg.size());
+		QMetaObject::invokeMethod(qApp, [&] { out = qsrs::ui::report(words); }, Qt::BlockingQueuedConnection);
 		return rust::String(out.toStdString());
 	}
 	auto out = frames_command_on_gui(QString::fromUtf8(action.data(), action.size()), QString::fromUtf8(arg.data(), arg.size()));

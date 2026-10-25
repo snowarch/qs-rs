@@ -74,6 +74,7 @@ enum Level {
     Errors,
     Frames,
     Memory,
+    Ui,
     Log,
     List,
     Kill,
@@ -92,7 +93,7 @@ impl Level {
         use Level::*;
         match self {
             Root => None,
-            Check | Errors | Frames | Memory | Log | List | Kill | Ipc | Msg => Some(Root),
+            Check | Errors | Frames | Memory | Ui | Log | List | Kill | Ipc | Msg => Some(Root),
             IpcShow | IpcCall | IpcWait | IpcListen | Prop => Some(Ipc),
             PropGet => Some(Prop),
         }
@@ -106,6 +107,7 @@ impl Level {
             Errors => "errors",
             Frames => "frames",
             Memory => "memory",
+            Ui => "ui",
             Log => "log",
             List => "list",
             Kill => "kill",
@@ -127,6 +129,7 @@ impl Level {
             (Root, "errors") => Errors,
             (Root, "frames") => Frames,
             (Root, "memory") => Memory,
+            (Root, "ui") => Ui,
             (Root, "log") => Log,
             (Root, "list") => List,
             (Root, "kill") => Kill,
@@ -148,11 +151,11 @@ impl Level {
     }
 
     fn instance_selection(self) -> bool {
-        matches!(self, Level::Log | Level::Errors | Level::Frames | Level::Memory | Level::Kill | Level::Ipc | Level::Msg)
+        matches!(self, Level::Log | Level::Errors | Level::Frames | Level::Memory | Level::Ui | Level::Kill | Level::Ipc | Level::Msg)
     }
 
     fn logging(self) -> bool {
-        matches!(self, Level::Root | Level::Check | Level::Errors | Level::Frames | Level::Memory | Level::Log | Level::List | Level::Kill | Level::Ipc | Level::Msg)
+        matches!(self, Level::Root | Level::Check | Level::Errors | Level::Frames | Level::Memory | Level::Ui | Level::Log | Level::List | Level::Kill | Level::Ipc | Level::Msg)
     }
 
     fn config_selection(self) -> bool {
@@ -292,7 +295,7 @@ impl Parser {
         }
         let max = match self.level {
             Level::Log | Level::Memory => 1,
-            Level::IpcCall | Level::Msg => usize::MAX,
+            Level::IpcCall | Level::Msg | Level::Ui => usize::MAX,
             Level::IpcWait | Level::IpcListen | Level::PropGet | Level::Frames => 2,
             _ => 0,
         };
@@ -351,6 +354,8 @@ impl Parser {
                 "reclaim" => Command::Frames { action: "memory".into(), arg: "reclaim".into() },
                 other => return Err(err(VALIDATION, format!("Unknown memory action: {other} (expected reclaim)"))),
             },
+            // Answered by the same runtime hook as the frame meter.
+            Level::Ui => Command::Frames { action: "ui".into(), arg: pos.collect::<Vec<_>>().join(" ") },
             Level::Log => Command::Log {
                 file: Some(next()).filter(|f| !f.is_empty()),
                 tail: self.log_tail,
@@ -466,6 +471,7 @@ fn help(level: Level) -> String {
              check                   Compile every QML file of the config and report errors (qs-rs).\n  \
              errors                  Warnings and errors of a running instance, grouped (qs-rs).\n  \
              memory                  Where a running instance's memory sits (qs-rs).\n  \
+             ui                      What a person would read on screen, and where (qs-rs).\n  \
              msg                     [DEPRECATED] Moved to `ipc call`.\n"
         ),
         Level::Log => format!(
@@ -498,6 +504,18 @@ fn help(level: Level) -> String {
              Where the instance's memory sits: process and allocator, live objects by the file\n  \
              that made them, and the images and offscreen layers they hold (upper bounds).\n\n  \
              reclaim                 Run a reclaim pass first (JS GC, unused components, purge).\n\n\
+             {INSTANCE}\n{CONFIG}{FILTER}"
+        ),
+        Level::Ui => format!(
+            "qs ui [OPTIONS] [in:WINDOW] [windows | find WORDS | at X Y]\n\n  \
+             What a person would read on screen: every visible item in screen pixels, minus what\n  \
+             is hidden, see-through or clipped away. One line per item: centre, rect, window,\n  \
+             type, text, flags (t, hover, pressed, focus, off, cut, over, part, edge, glyph).\n\n  \
+             (nothing)               Every visible text.\n  \
+             windows                 The shown windows and where they sit.\n  \
+             find WORDS              Items whose text or objectName holds WORDS.\n  \
+             at X Y                  Every item under a point, bottom to top.\n  \
+             in:WINDOW               Only windows whose name starts so (layer namespace or file).\n\n\
              {INSTANCE}\n{CONFIG}{FILTER}"
         ),
         Level::Frames => format!(
@@ -571,6 +589,8 @@ mod tests {
         assert_eq!(p("errors").unwrap().cmd, Command::Errors { follow: false, static_check: false });
         assert_eq!(p("memory").unwrap().cmd, Command::Frames { action: "memory".into(), arg: String::new() });
         assert_eq!(p("memory reclaim").unwrap().cmd, Command::Frames { action: "memory".into(), arg: "reclaim".into() });
+        assert_eq!(p("ui in:quickshell:iris find Glass").unwrap().cmd, Command::Frames { action: "ui".into(), arg: "in:quickshell:iris find Glass".into() });
+        assert_eq!(p("ui").unwrap().cmd, Command::Frames { action: "ui".into(), arg: String::new() });
         assert!(p("memory everything").is_err());
         assert!(p("check --static").is_err());
         assert_eq!(p("log -t 5 -f").unwrap().cmd, Command::Log { file: None, tail: 5, follow: true, rules: String::new() });
