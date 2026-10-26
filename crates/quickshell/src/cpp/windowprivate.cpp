@@ -4,6 +4,7 @@
 #include <QtQuick/QQuickWindow>
 #include <QtQuick/private/qquickwindow_p.h>
 #include <QtQuick/private/qquickitem_p.h>
+#include <QtQuick/private/qquicktext_p.h>
 #include <QtQml/private/qqmldata_p.h>
 #include <QtQml/private/qqmlcontextdata_p.h>
 #include <QtQuick/private/qsgadaptationlayer_p.h>
@@ -105,4 +106,20 @@ QString frameclock::dirty_items(QWindow* window, int max) {
 	if (order.size() > max) out << QStringLiteral("+%1").arg(order.size() - max);
 	return out.join(QLatin1Char('|'));
 }
+// Qt 6.12: QQuickText::init sets ItemObservesViewport "until size is known" and only setText
+// recomputes it (past 10000 characters), returning early when the text doesn't change. A Text
+// born empty (an icon-only label, a rolling number's spare digit) keeps it for good, and
+// QQuickTextPrivate::transformChanged then rebuilds its node for every move or scale of any
+// ancestor: ~120 per frame while the iRiS island opened its Control Center.
+void frameclock::quiet_short_texts(QWindow* window) {
+	auto* qw = qobject_cast<QQuickWindow*>(window);
+	if (!qw) return;
+	for (auto* item = QQuickWindowPrivate::get(qw)->dirtyItemList; item; item = QQuickItemPrivate::get(item)->nextDirtyItem) {
+		if (!(item->flags() & QQuickItem::ItemObservesViewport)) continue;
+		if (!(QQuickItemPrivate::get(item)->dirtyAttributes & QQuickItemPrivate::Content)) continue;
+		if (auto* text = qobject_cast<QQuickText*>(item); text && text->text().size() <= 10000)
+			text->setFlag(QQuickItem::ItemObservesViewport, false);
+	}
+}
+
 } // namespace qsrs

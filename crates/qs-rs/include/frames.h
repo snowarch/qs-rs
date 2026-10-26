@@ -308,6 +308,9 @@ public:
 			if (auto* w = qobject_cast<QQuickWindow*>(watched); w && !this->hooked.contains(w)) {
 				this->hooked.insert(w);
 				QObject::connect(w, &QQuickWindow::afterAnimating, this, [this, w] { this->relay(w); }, Qt::DirectConnection);
+				// Same hook, unrelated fix: see fc::quiet_short_texts. Before sync, so texts dirtied by
+				// polish-time layout moves are caught too.
+				QObject::connect(w, &QQuickWindow::beforeSynchronizing, this, [w] { fc::quiet_short_texts(w); }, Qt::DirectConnection);
 				QObject::connect(w, &QObject::destroyed, this, [this, w] { this->hooked.remove(w); });
 			}
 		}

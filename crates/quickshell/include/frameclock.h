@@ -32,4 +32,9 @@ bool scene_waits(QWindow* window);
 /// What dirtied a QQuickWindow's coming frame: its dirty items as `Type@file.qml:line`, most
 /// repeated first, `|`-joined, at most `max` and a `+N` for the rest (src/cpp/windowprivate.cpp).
 QString dirty_items(QWindow* window, int max);
+
+/// Lets the window's dirtied short Texts stop observing the viewport: Qt starts every Text with
+/// it and only clears it when the text changes, so one born empty keeps rebuilding its node on
+/// every move of an ancestor (src/cpp/windowprivate.cpp).
+void quiet_short_texts(QWindow* window);
 } // namespace qsrs::frameclock
