@@ -146,7 +146,7 @@ private:
 		qint64 start = 0, animated = 0, synced = 0, rendered = 0, lastSwap = 0, requestAt = 0;
 		qint64 ticks = 0, tickNs = 0;
 		Stats stats;
-		QString name;
+		QString name, who;
 	};
 
 	FrameMeter(): QObject(qApp) {
@@ -178,6 +178,10 @@ private:
 			};
 		};
 		w.conns << QObject::connect(qw, &QQuickWindow::afterAnimating, this, at(&Win::animated), Qt::DirectConnection);
+		// Who asked for the frame: the dirty items once polish and animations ran, before sync clears them.
+		w.conns << QObject::connect(qw, &QQuickWindow::afterAnimating, this, [this, qw] {
+			if (auto it = this->wins.find(qw); it != this->wins.end() && this->log) it.value().who = fc::dirty_items(qw, 6);
+		}, Qt::DirectConnection);
 		w.conns << QObject::connect(qw, &QQuickWindow::afterSynchronizing, this, at(&Win::synced), Qt::DirectConnection);
 		w.conns << QObject::connect(qw, &QQuickWindow::afterRendering, this, at(&Win::rendered), Qt::DirectConnection);
 		w.conns << QObject::connect(qw, &QQuickWindow::frameSwapped, this, [this, qw] { this->swapped(qw); }, Qt::DirectConnection);
@@ -225,16 +229,17 @@ private:
 
 		if (this->log) {
 			auto ms = [](qint64 ns) { return QString::number(ns / 1e6, 'f', 3); };
-			auto line = QString("t=%1 win=%2 d=%3 miss=%4 cont=%5 ticks=%6 tick=%7 polish=%8 sync=%9 render=%10 swap=%11 cost=%12 hz=%13\n")
+			auto line = QString("t=%1 win=%2 d=%3 miss=%4 cont=%5 ticks=%6 tick=%7 polish=%8 sync=%9 render=%10 swap=%11 cost=%12 hz=%13 who=%14\n")
 				.arg(now / 1000).arg(w.name, ms(delta)).arg(missed).arg(continuous ? 1 : 0).arg(w.ticks)
 				.arg(ms(w.tickNs), ms(w.animated - w.start), ms(w.synced - w.animated), ms(w.rendered - w.synced), ms(now - w.rendered), ms(now - w.start))
-				.arg(QString::number(1e9 / period, 'f', 2));
+				.arg(QString::number(1e9 / period, 'f', 2), w.who.isEmpty() ? QStringLiteral("-") : w.who);
 			this->log->write(line.toUtf8());
 		}
 		w.lastSwap = now;
 		w.start = 0;
 		w.ticks = 0;
 		w.tickNs = 0;
+		w.who.clear();
 		// A request made while this frame rendered (the window is still animating).
 		w.requestAt = fc::update_pending(qw) ? now : 0;
 	}
@@ -478,4 +483,6 @@ inline QString frames_command_on_gui(const QString& action, const QString& arg) 
 //   sync    afterAnimating to afterSynchronizing (beginFrame and the scene graph sync)
 //   render  afterSynchronizing to afterRendering
 //   swap    afterRendering to frameSwapped (endFrame, the present)
+//   who     what dirtied it: dirty items as Type@file.qml:line:flags (c content, s size, t moved, o opacity),
+//           most repeated first (* count)
 //   cost    the whole frame; hz the refresh of the window's screen

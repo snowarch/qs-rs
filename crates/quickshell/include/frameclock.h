@@ -3,6 +3,7 @@
 // types (SpringValue): when the current animation step is meant to be on screen, and the
 // refresh period it steps at. GUI thread only; zero while the driver is not installed
 // (QSRS_QT_ANIMATION_TIMER), and readers fall back to their own clock.
+#include <QtCore/QString>
 #include <QtCore/QtGlobal>
 #include <ctime>
 
@@ -27,4 +28,8 @@ bool update_pending(QWindow* window);
 /// Whether a drawable QQuickWindow holds dirtied items or items waiting for polish: a frame it
 /// needs, asked for or not (src/cpp/windowprivate.cpp).
 bool scene_waits(QWindow* window);
+
+/// What dirtied a QQuickWindow's coming frame: its dirty items as `Type@file.qml:line`, most
+/// repeated first, `|`-joined, at most `max` and a `+N` for the rest (src/cpp/windowprivate.cpp).
+QString dirty_items(QWindow* window, int max);
 } // namespace qsrs::frameclock

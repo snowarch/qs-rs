@@ -3,10 +3,14 @@
 #include <QtGui/private/qwindow_p.h>
 #include <QtQuick/QQuickWindow>
 #include <QtQuick/private/qquickwindow_p.h>
+#include <QtQuick/private/qquickitem_p.h>
+#include <QtQml/private/qqmldata_p.h>
+#include <QtQml/private/qqmlcontextdata_p.h>
 #include <QtQuick/private/qsgadaptationlayer_p.h>
 #include <QtQuick/private/qsgcontext_p.h>
 #include <QtQuick/QSGRendererInterface>
 #include <QtGui/QFont>
+#include <algorithm>
 #include "quickshell/include/frameclock.h"
 
 namespace qsrs {
@@ -69,5 +73,36 @@ bool frameclock::scene_waits(QWindow* window) {
 	if (!qw) return false;
 	auto* d = QQuickWindowPrivate::get(qw);
 	return d->updatesEnabled && d->isRenderable() && (d->dirtyItemList || !d->itemsToPolish.isEmpty());
+}
+QString frameclock::dirty_items(QWindow* window, int max) {
+	auto* qw = qobject_cast<QQuickWindow*>(window);
+	if (!qw) return {};
+	QHash<QString, int> seen;
+	QHash<QString, quint32> dirt;
+	QStringList order;
+	for (auto* item = QQuickWindowPrivate::get(qw)->dirtyItemList; item; item = QQuickItemPrivate::get(item)->nextDirtyItem) {
+		auto key = QString::fromLatin1(item->metaObject()->className());
+		if (auto cut = key.indexOf(QLatin1String("_QML")); cut > 0) key.truncate(cut);
+		if (auto* data = QQmlData::get(item); data && data->outerContext)
+			key += QStringLiteral("@%1:%2").arg(data->outerContext->url().fileName()).arg(data->lineNumber);
+		if (!seen.contains(key)) order << key;
+		seen[key]++;
+		dirt[key] |= QQuickItemPrivate::get(item)->dirtyAttributes;
+	}
+	std::stable_sort(order.begin(), order.end(), [&](const QString& a, const QString& b) { return seen[a] > seen[b]; });
+	// What it costs: c content rebuilt (text laid out, geometry made), s size, t moved or turned, o opacity.
+	auto flags = [](quint32 d) {
+		QString f;
+		if (d & QQuickItemPrivate::Content) f += QLatin1Char('c');
+		if (d & QQuickItemPrivate::Size) f += QLatin1Char('s');
+		if (d & (QQuickItemPrivate::TransformOrigin | QQuickItemPrivate::Transform | QQuickItemPrivate::BasicTransform | QQuickItemPrivate::Position)) f += QLatin1Char('t');
+		if (d & QQuickItemPrivate::OpacityValue) f += QLatin1Char('o');
+		return f.isEmpty() ? f : QLatin1Char(':') + f;
+	};
+	QStringList out;
+	for (const auto& key: order.mid(0, max))
+		out << (seen[key] > 1 ? QStringLiteral("%1%2*%3").arg(key, flags(dirt[key])).arg(seen[key]) : key + flags(dirt[key]));
+	if (order.size() > max) out << QStringLiteral("+%1").arg(order.size() - max);
+	return out.join(QLatin1Char('|'));
 }
 } // namespace qsrs
