@@ -507,7 +507,7 @@ fn help(level: Level) -> String {
              {INSTANCE}\n{CONFIG}{FILTER}"
         ),
         Level::Ui => format!(
-            "qs ui [OPTIONS] [in:WINDOW] [windows | find WORDS | at X Y]\n\n  \
+            "qs ui [OPTIONS] [in:WINDOW] [windows | find WORDS | at X Y | textures]\n\n  \
              What a person would read on screen: every visible item in screen pixels, minus what\n  \
              is hidden, see-through or clipped away. One line per item: centre, rect, window,\n  \
              type, text, flags (t, hover, pressed, focus, off, cut, over, part, edge, glyph).\n\n  \
@@ -515,6 +515,7 @@ fn help(level: Level) -> String {
              windows                 The shown windows and where they sit.\n  \
              find WORDS              Items whose text or objectName holds WORDS.\n  \
              at X Y                  Every item under a point, bottom to top.\n  \
+             textures                Images asking one picture with and without mipmaps.\n  \
              in:WINDOW               Only windows whose name starts so (layer namespace or file).\n\n\
              {INSTANCE}\n{CONFIG}{FILTER}"
         ),
