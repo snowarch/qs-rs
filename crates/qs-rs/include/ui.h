@@ -7,17 +7,12 @@
 //   ui windows          the shown windows and where they sit
 //   ui find WORDS       items whose text or objectName holds WORDS (any case)
 //   ui at X Y           what is under a point in the window that takes the pointer there, bottom to top
-//   ui textures         images sharing one decoded picture (same url, size, cache) but asking it with and without
-//                       mipmaps: Qt keeps one texture per picture, so the later one flips it ("QSGPlainTexture:
-//                       Mipmap settings changed without having image data available")
 // `in:NAME` before any of them keeps one window (its layer namespace or the file declaring it, a prefix).
 //
 // One line per item: `cx cy  x y w h  window  Type  "text"  flags`, a text renderer's rect being its ink; flags: t (draws
 // text), hover, pressed, focus, off (disabled), cut (text elided), over (text runs past its box), part (an ancestor
 // cuts its side off), edge (only its top or bottom, as a scrolled list does), glyph (an icon font). Ink of no colour
 // (a field's hidden placeholder) is not listed.
-#include <QtCore/QHash>
-#include <QtCore/QMap>
 #include <QtCore/QSet>
 #include <QtCore/QStringList>
 #include <QtGui/QColor>
@@ -180,23 +175,6 @@ inline QString line(const Hit& h, const QString& win) {
 	    .trimmed();
 }
 
-// Every image item under `item`, shown or not, keyed by the picture Qt decodes once for all of them.
-inline void images(QQuickItem* item, const QString& win, QMap<QString, QStringList>& users, QHash<QString, QSet<bool>>& mipmaps) {
-	if (item->inherits("QQuickImageBase") && item->property("cache").toBool()) {
-		const auto url = item->property("source").toUrl();
-		if (!url.isEmpty()) {
-			const auto size = item->property("sourceSize").toSize();
-			const bool mipmap = item->property("mipmap").toBool();
-			const auto key = QString("%1 @ %2x%3").arg(url.toString()).arg(size.width()).arg(size.height());
-			QString parent = item->parentItem() ? typeName(item->parentItem()) : QString();
-			users[key] << QString("  %1  %2 in %3  mipmap %4%5").arg(win, typeName(item), parent).arg(mipmap ? "on" : "off")
-			                  .arg(item->isVisible() ? "" : "  hidden");
-			mipmaps[key].insert(mipmap);
-		}
-	}
-	for (auto* child: item->childItems()) images(child, win, users, mipmaps);
-}
-
 inline QString report(const QString& arg) {
 	auto words = arg.split(' ', Qt::SkipEmptyParts);
 	QString only;
@@ -211,17 +189,6 @@ inline QString report(const QString& arg) {
 	std::stable_sort(windows.begin(), windows.end(), [](QQuickWindow* a, QQuickWindow* b) {
 		return a->property("_qsLayer").toInt() > b->property("_qsLayer").toInt();
 	});
-	if (mode == "textures") {
-		QMap<QString, QStringList> users;
-		QHash<QString, QSet<bool>> mipmaps;
-		for (auto* w: windows) {
-			auto name = windowName(w);
-			if (only.isEmpty() || name.startsWith(only, Qt::CaseInsensitive)) images(w->contentItem(), name, users, mipmaps);
-		}
-		for (auto it = users.cbegin(); it != users.cend(); ++it)
-			if (mipmaps.value(it.key()).size() > 1) out << it.key() << it.value();
-		return out.isEmpty() ? QString("no picture is asked with and without mipmaps") : out.join('\n');
-	}
 	for (auto* w: windows) {
 		auto name = windowName(w);
 		if (!only.isEmpty() && !name.startsWith(only, Qt::CaseInsensitive)) continue;
@@ -268,7 +235,7 @@ inline QString report(const QString& arg) {
 		}
 	}
 	if (mode != "" && mode != "windows" && mode != "find" && mode != "at")
-		return "unknown ui action (windows, find WORDS, at X Y, textures; in:WINDOW first keeps one window)";
+		return "unknown ui action (windows, find WORDS, at X Y; in:WINDOW first keeps one window)";
 	return out.isEmpty() ? QString("nothing") : out.join('\n');
 }
 
