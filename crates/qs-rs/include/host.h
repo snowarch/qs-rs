@@ -810,15 +810,15 @@ inline rust::String check_file(QQmlEngine& engine, const QString& path) {
 // Creates the root object from a local file; prints errors and returns null on failure.
 inline QObject* create_root(QQmlEngine& engine, const QString& path) {
 	QQmlComponent component(&engine, QUrl::fromLocalFile(path));
-	if (component.isError()) {
+	// Quickshell's own line: setup's update check reads it to know the new version did not load
+	auto failed = [&] {
+		qCritical() << "Failed to load configuration";
 		for (auto& e: component.errors()) qCritical().noquote() << e.toString();
 		return nullptr;
-	}
+	};
+	if (component.isError()) return failed();
 	auto* root = component.create();
-	if (root == nullptr) {
-		for (auto& e: component.errors()) qCritical().noquote() << e.toString();
-		return nullptr;
-	}
+	if (root == nullptr) return failed();
 	QQmlEngine::setObjectOwnership(root, QQmlEngine::CppOwnership);
 	finish_load(engine, root);
 	return root;
