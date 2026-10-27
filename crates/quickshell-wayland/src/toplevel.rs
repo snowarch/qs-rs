@@ -228,7 +228,7 @@ fn emit_update(this: Pin<&mut qobject::ToplevelCore>, key: u32, i: &Info) {
     this.toplevel_updated(key, QString::from(&i.app_id), QString::from(&i.title), i.parent, i.activated, i.maximized, i.minimized, i.fullscreen, screens);
 }
 
-/// Binds the manager on its own queue; `None` (with a warning, once) when the compositor lacks
+/// Binds the manager on its own queue; `None` (a debug line, once, quiet like Quickshell) when the compositor lacks
 /// the protocol or Qt is not on Wayland. Qt thread only on first call.
 fn globals() -> Option<&'static Globals> {
     static G: OnceLock<Option<Globals>> = OnceLock::new();
@@ -237,7 +237,7 @@ fn globals() -> Option<&'static Globals> {
         let (list, queue) = registry_queue_init::<State>(&conn).ok()?;
         let qh = queue.handle();
         if list.bind::<Manager, _, _>(&qh, 1..=3, ()).is_err() {
-            quickshell::qs_log!(warn, "quickshell.wayland.toplevel", "Cannot manage toplevels as zwlr_foreign_toplevel_management_v1 is not supported by the current compositor.");
+            quickshell::qs_log!(debug, "quickshell.wayland.toplevel", "Cannot manage toplevels as zwlr_foreign_toplevel_management_v1 is not supported by the current compositor.");
             return None;
         }
         let seat = list.bind::<WlSeat, _, _>(&qh, 1..=1, ()).ok();
