@@ -42,11 +42,21 @@ impl Scan {
         // not in the import graph, yet their `root:` imports need the same rewrite: scan every dir
         // of the shell that holds QML. Hidden dirs are skipped, and links are followed only under
         // modules/, where `inir hub` links plugins (a link elsewhere, like inir's dev/, is not the shell).
-        let modules = scan.root.join("modules");
+        let root = scan.root.clone();
+        let modules = root.join("modules");
+        // what the root's own links reach (inir's dev/ is the devkit) is not the shell, through any link
+        let foreign: Vec<PathBuf> = fs::read_dir(&scan.root).into_iter().flatten().flatten()
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_symlink()))
+            .filter_map(|e| e.path().canonicalize().ok())
+            .collect();
+        let follow = |link: &Path| link.canonicalize().is_ok_and(|t| t.is_dir()
+            && (!t.starts_with(&root) || t.starts_with(&modules))
+            && !foreign.iter().any(|f| t.starts_with(f)));
+        let depth = scan.root.components().count() + 32; // past any shell folder: a link loop
         let mut seen = BTreeSet::new();
         let mut stack = vec![scan.root.clone()];
         while let Some(dir) = stack.pop() {
-            if !dir.canonicalize().is_ok_and(|real| seen.insert(real)) {
+            if dir.components().count() > depth || !seen.insert(dir.clone()) {
                 continue;
             }
             let Ok(rd) = fs::read_dir(&dir) else { continue };
@@ -55,7 +65,7 @@ impl Scan {
             for e in rd.flatten() {
                 let name = e.file_name().to_string_lossy().into_owned();
                 let Ok(ft) = e.file_type() else { continue };
-                let linked_dir = ft.is_symlink() && e.path().starts_with(&modules) && e.path().is_dir();
+                let linked_dir = ft.is_symlink() && e.path().starts_with(&modules) && follow(&e.path());
                 if (ft.is_dir() || linked_dir) && !name.starts_with('.') {
                     stack.push(e.path());
                 } else if ft.is_file() && name.ends_with(".qml") {
@@ -357,6 +367,7 @@ mod tests {
             ("fam/parts/Card.qml", "import qs.modules.fam\nItem {}\n"),
             ("fam/parts/loaded.qml", "import \"root:\"\nItem {}\n"),
         ]);
+        let devkit = tree(&[("tools/Probe.qml", "import \"root:\"\nItem {}\n")]);
         let dir = tree(&[
             ("shell.qml", "import QtQuick\nShellRoot {}\n"),
             ("HubScan.qml", "import qs.modules.fam\nimport qs.modules.fam.parts\nQtObject {}\n"),
@@ -364,13 +375,17 @@ mod tests {
             ("modules/shared/Base.qml", "Item {}\n"),
         ]);
         std::os::unix::fs::symlink(store.join("fam"), dir.join("modules/fam")).unwrap();
-        std::os::unix::fs::symlink(&store, dir.join("dev")).unwrap();
+        std::os::unix::fs::symlink(store.join("fam"), dir.join("modules/twin")).unwrap();
+        std::os::unix::fs::symlink(&devkit, dir.join("dev")).unwrap();
+        std::os::unix::fs::symlink(dir.join("dev"), dir.join("modules/sneaky")).unwrap();
         let scan = Scan::new(&dir.join("shell.qml")).unwrap();
         let root = dir.canonicalize().unwrap();
         assert_eq!(scan.intercepts[&root.join("modules/fam/qmldir")], "module qs.modules.fam\nPanel 1.0 Panel.qml\n");
         assert_eq!(scan.intercepts[&root.join("modules/fam/Panel.qml")], "import QtQuick\nimport \"../../services\"\nItem {}\n");
         assert_eq!(scan.intercepts[&root.join("modules/fam/parts/loaded.qml")], "import \"../../../\"\nItem {}\n");
-        assert!(!scan.intercepts.keys().any(|k| k.starts_with(root.join("dev"))));
+        // a second link to the same folder gets its own rewrites
+        assert_eq!(scan.intercepts[&root.join("modules/twin/parts/loaded.qml")], "import \"../../../\"\nItem {}\n");
+        assert!(!scan.intercepts.keys().any(|k| k.starts_with(root.join("dev")) || k.starts_with(root.join("modules/sneaky"))));
 
         let vfs = dir.join("../").canonicalize().unwrap().join(format!("qsrs-vfs-link-{}", std::process::id()));
         scan.write_vfs(&vfs).unwrap();
@@ -380,6 +395,7 @@ mod tests {
         fs::remove_dir_all(&vfs).unwrap();
         fs::remove_dir_all(&dir).unwrap();
         fs::remove_dir_all(&store).unwrap();
+        fs::remove_dir_all(&devkit).unwrap();
     }
 }
 
