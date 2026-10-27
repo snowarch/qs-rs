@@ -40,16 +40,23 @@ impl Scan {
         scan.scan_file(&root_file);
         // Files reached only by URL (Loader.source, Qt.createComponent, inir's getWidgetUrl) are
         // not in the import graph, yet their `root:` imports need the same rewrite: scan every dir
-        // of the shell that holds QML. Hidden and symlinked dirs are skipped.
+        // of the shell that holds QML. Hidden dirs are skipped, and links are followed only under
+        // modules/, where `inir hub` links plugins (a link elsewhere, like inir's dev/, is not the shell).
+        let modules = scan.root.join("modules");
+        let mut seen = BTreeSet::new();
         let mut stack = vec![scan.root.clone()];
         while let Some(dir) = stack.pop() {
+            if !dir.canonicalize().is_ok_and(|real| seen.insert(real)) {
+                continue;
+            }
             let Ok(rd) = fs::read_dir(&dir) else { continue };
             let mut has_qml = false;
             let mut lower = Vec::new();
             for e in rd.flatten() {
                 let name = e.file_name().to_string_lossy().into_owned();
                 let Ok(ft) = e.file_type() else { continue };
-                if ft.is_dir() && !name.starts_with('.') {
+                let linked_dir = ft.is_symlink() && e.path().starts_with(&modules) && e.path().is_dir();
+                if (ft.is_dir() || linked_dir) && !name.starts_with('.') {
                     stack.push(e.path());
                 } else if ft.is_file() && name.ends_with(".qml") {
                     has_qml = true;
@@ -168,12 +175,28 @@ impl Scan {
         }
         self.scan_dir(path.parent().unwrap());
         for import in imports {
-            if let Ok(dir) = import.canonicalize()
-                && dir.is_dir() {
-                    self.scan_dir(&dir);
-                }
+            if let Some(dir) = self.resolve(&import) {
+                self.scan_dir(&dir);
+            }
         }
         Some(info)
+    }
+
+    /// An imported dir as Quickshell sees it: its path in the shell when it is there, through links
+    /// (QFileInfo::absoluteFilePath, no link resolved), else the real one.
+    fn resolve(&self, import: &Path) -> Option<PathBuf> {
+        let mut lexical = PathBuf::new();
+        for c in import.components() {
+            match c {
+                std::path::Component::ParentDir => drop(lexical.pop()),
+                std::path::Component::CurDir => {}
+                c => lexical.push(c),
+            }
+        }
+        if lexical.starts_with(&self.root) && lexical.is_dir() {
+            return Some(lexical);
+        }
+        import.canonicalize().ok().filter(|d| d.is_dir())
     }
 
     /// Mirror the shell into `vfs`: real dirs for scanned dirs, symlinks for everything else,
@@ -324,6 +347,39 @@ mod tests {
         assert_eq!(fs::read_to_string(vfs.join("widgets/qmldir")).unwrap(), "module qs.widgets\nBar 1.0 Bar.qml\n");
         fs::remove_dir_all(&vfs).unwrap();
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn mirrors_plugins_linked_into_modules() {
+        // `inir hub` links a family at modules/<id> to its own folder outside the shell.
+        let store = tree(&[
+            ("fam/Panel.qml", "import QtQuick\nimport \"root:services\"\nItem {}\n"),
+            ("fam/parts/Card.qml", "import qs.modules.fam\nItem {}\n"),
+            ("fam/parts/loaded.qml", "import \"root:\"\nItem {}\n"),
+        ]);
+        let dir = tree(&[
+            ("shell.qml", "import QtQuick\nShellRoot {}\n"),
+            ("HubScan.qml", "import qs.modules.fam\nimport qs.modules.fam.parts\nQtObject {}\n"),
+            ("services/Audio.qml", "QtObject {}\n"),
+            ("modules/shared/Base.qml", "Item {}\n"),
+        ]);
+        std::os::unix::fs::symlink(store.join("fam"), dir.join("modules/fam")).unwrap();
+        std::os::unix::fs::symlink(&store, dir.join("dev")).unwrap();
+        let scan = Scan::new(&dir.join("shell.qml")).unwrap();
+        let root = dir.canonicalize().unwrap();
+        assert_eq!(scan.intercepts[&root.join("modules/fam/qmldir")], "module qs.modules.fam\nPanel 1.0 Panel.qml\n");
+        assert_eq!(scan.intercepts[&root.join("modules/fam/Panel.qml")], "import QtQuick\nimport \"../../services\"\nItem {}\n");
+        assert_eq!(scan.intercepts[&root.join("modules/fam/parts/loaded.qml")], "import \"../../../\"\nItem {}\n");
+        assert!(!scan.intercepts.keys().any(|k| k.starts_with(root.join("dev"))));
+
+        let vfs = dir.join("../").canonicalize().unwrap().join(format!("qsrs-vfs-link-{}", std::process::id()));
+        scan.write_vfs(&vfs).unwrap();
+        assert!(fs::symlink_metadata(vfs.join("modules/fam")).unwrap().is_dir());
+        assert!(vfs.join("modules/fam/parts/qmldir").is_file());
+        assert!(fs::symlink_metadata(vfs.join("dev")).unwrap().file_type().is_symlink());
+        fs::remove_dir_all(&vfs).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+        fs::remove_dir_all(&store).unwrap();
     }
 }
 
