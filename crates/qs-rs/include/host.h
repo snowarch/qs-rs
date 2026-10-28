@@ -243,6 +243,13 @@ inline rust::String qt_plugins_path() {
 // Replaces Qt's plugin search path (before the application exists).
 inline void set_plugin_path(const QString& path) { QCoreApplication::setLibraryPaths({path}); }
 
+// The desktop's icon theme when no platform theme gave one: the bundle's own Qt cannot load the desktop's
+// platform theme plugin (kde, qt6ct), and Qt's generic theme only knows hicolor.
+inline void setup_desktop_icons(const QString& theme) {
+	auto current = QIcon::themeName();
+	if (current.isEmpty() || current == QStringLiteral("hicolor")) QIcon::setThemeName(theme);
+}
+
 // Upstream launch.cpp: the IconTheme pragma, and $XDG_DATA_DIRS/pixmaps as icon fallback paths
 // (some programs install their icon there, and the platform themes do not search it).
 inline void setup_icons(const QString& theme) {

@@ -149,6 +149,35 @@ fn clean_stale_vfs() {
     }
 }
 
+/// The icon theme the desktop's platform theme reads: KDE's, qt6ct's or GTK's setting, the one
+/// QT_QPA_PLATFORMTHEME names first.
+fn desktop_icon_theme() -> Option<String> {
+    let config = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).filter(|p| p.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+    let mut sources = [("kdeglobals", "Icons", "Theme"), ("qt6ct/qt6ct.conf", "Appearance", "icon_theme"), ("gtk-3.0/settings.ini", "Settings", "gtk-icon-theme-name")];
+    if std::env::var("QT_QPA_PLATFORMTHEME").is_ok_and(|t| t.starts_with("qt6ct")) {
+        sources.swap(0, 1);
+    }
+    sources.into_iter().find_map(|(file, group, key)| ini_value(&config.join(file), group, key))
+}
+
+fn ini_value(path: &std::path::Path, group: &str, key: &str) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let mut inside = false;
+    for line in text.lines().map(str::trim) {
+        if line.starts_with('[') {
+            inside = line.strip_prefix('[').and_then(|l| l.strip_suffix(']')) == Some(group);
+        } else if inside
+            && let Some((k, v)) = line.split_once('=')
+            && k.trim() == key
+            && !v.trim().is_empty()
+        {
+            return Some(v.trim().to_string());
+        }
+    }
+    None
+}
+
 fn qstr(p: &std::path::Path) -> QString {
     QString::from(&*p.to_string_lossy())
 }
@@ -414,6 +443,11 @@ fn run_shell(cli: &cli::Cli, config: PathBuf, started: std::time::Instant) -> i3
     let mut app = host::ffi::create_app(pragmas.use_qapplication, pragmas.desktop_settings_aware);
     if pragmas.enable_webengine {
         host::ffi::init_webengine();
+    }
+    if pragmas.icon_theme.is_none()
+        && let Some(theme) = desktop_icon_theme()
+    {
+        host::ffi::setup_desktop_icons(&QString::from(theme.as_str()));
     }
     host::ffi::configure_app(&QString::from(pragmas.app_id.as_deref().unwrap_or("org.quickshell")), pragmas.native_text_rendering);
     // QML debug server for qmlprofiler/GammaRay before the engine: upstream's `--debug PORT
