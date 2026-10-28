@@ -1,0 +1,43 @@
+name: release
+
+# The bundle people's machines run: qs-rs with its own Qt (scripts/bundle.sh). PRs build it too.
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: write
+
+env:
+  QT_VERSION: 6.12.0
+
+jobs:
+  bundle:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: build deps
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq --no-install-recommends ninja-build meson patchelf zstd clang lld libclang-dev \
+            libwayland-dev wayland-protocols libffi-dev libexpat1-dev libpam0g-dev libpipewire-0.3-dev \
+            libjemalloc-dev libxkbcommon-dev libegl-dev libgl-dev libvulkan-dev libdbus-1-dev libfontconfig-dev \
+            libfreetype-dev libglib2.0-0t64 libpulse0
+      - name: qt
+        run: |
+          pipx run aqtinstall install-qt -O "$RUNNER_TEMP/qt" linux desktop "$QT_VERSION" linux_gcc_64 \
+            -m qt5compat qtmultimedia qtshadertools qtimageformats
+      - name: bundle
+        run: |
+          ver=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "qs-rs") | .version')
+          if [[ $GITHUB_REF == refs/tags/* && ${GITHUB_REF_NAME#v} != "$ver" ]]; then
+            echo "tag $GITHUB_REF_NAME but Cargo.toml says $ver"; exit 1
+          fi
+          scripts/bundle.sh "$RUNNER_TEMP/qt/$QT_VERSION/gcc_64" out
+      - if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          gh release create "$GITHUB_REF_NAME" out/*.tar.zst out/*.sha256 --title "$GITHUB_REF_NAME" \
+            --notes-file out/qs-rs-*/SOURCES
+        env:
+          GH_TOKEN: ${{ github.token }}
