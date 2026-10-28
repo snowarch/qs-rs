@@ -642,7 +642,8 @@ public:
 		this->slow.setInterval(30000);
 		QObject::connect(&this->slow, &QTimer::timeout, this, [this] { this->sample(); });
 		this->slow.start();
-		QTimer::singleShot(5100, this, [this] { this->sample(); });
+		// precise: a coarse timer may fire 5 % early, before the 5 s a sample needs, and the startup line waits 30 s
+		QTimer::singleShot(5100, Qt::PreciseTimer, this, [this] { this->sample(); });
 		qApp->installEventFilter(this);
 	}
 
