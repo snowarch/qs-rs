@@ -129,8 +129,10 @@ mkdir -p "$DEST/share/licenses/qt-sbom"
 find "$QT/sbom" -name '*.spdx' ! -name '*.source.spdx' ! -name 'qtwebengine*' ! -name 'qtwebchannel*' \
     ! -name 'qtpositioning*' -exec cp {} "$DEST/share/licenses/qt-sbom/" \;
 for part in layer-shell-qt kirigami syntax-highlighting; do cp -a "$WORK/$part/LICENSES" "$DEST/share/licenses/$part"; done
-cp /usr/share/doc/libjemalloc2/copyright "$DEST/share/licenses/jemalloc"
-cp /usr/share/doc/libgomp1/copyright "$DEST/share/licenses/libgomp"
+# as the build's distro keeps them: Ubuntu in CI, Arch on a dev machine
+lic() { local f; for f in "${@:2}"; do [ -e "$f" ] && { cp -a "$f" "$DEST/share/licenses/$1"; return; }; done; echo "no license for $1" >&2; return 1; }
+lic jemalloc /usr/share/doc/libjemalloc2/copyright /usr/share/licenses/jemalloc/COPYING
+lic libgomp /usr/share/doc/libgomp1/copyright /usr/share/licenses/libgomp
 cat >"$DEST/SOURCES" <<EOF
 qs-rs $VER for x86_64 with its own Qt: unpack it anywhere and run bin/qs. glibc, mesa, wayland, pam, pipewire,
 dbus and fonts come from the system.
@@ -157,7 +159,7 @@ pack "$NAME"
 
 # Qt WebEngine, for the sidebar's web apps: 3x the rest of Qt for one tab most people leave off, so it is its own
 # download, unpacked over the bundle (Qt finds libexec/, resources/ and translations/ from bin/qt.conf's prefix)
-[ -f "$QT/lib/libQt6WebEngineCore.so.6" ] || exit 0
+[ -f "$QT/lib/libQt6WebEngineCore.so.6" ] || { echo "no Qt WebEngine in $QT: qs-rs-webengine not built"; exit 0; }
 WEB=$OUT/qs-rs-webengine-$VER-x86_64
 rm -rf "$WEB"
 mkdir -p "$WEB/lib" "$WEB/libexec" "$WEB/qml" "$WEB/translations" "$WEB/share/licenses/qt-sbom"
