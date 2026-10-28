@@ -285,8 +285,16 @@ inline std::unique_ptr<QGuiApplication> create_app(bool useQApplication, bool de
 	static char arg0[] = "quickshell";
 	static char* argv[] = {arg0, nullptr};
 	QGuiApplication::setDesktopSettingsAware(desktopSettingsAware);
-	if (useQApplication) return std::make_unique<QApplication>(argc, argv);
-	return std::make_unique<QGuiApplication>(argc, argv);
+	// Qt's services ask the portal for a version before registering the app id, and xdg-desktop-portal 1.20+
+	// refuses a registration after any other call: a WARN at every start. Both skipped while the platform starts;
+	// openUrl still goes through the portal and falls back without one.
+	const bool probe = !qEnvironmentVariableIsSet("QT_NO_XDG_DESKTOP_PORTAL");
+	if (probe) qputenv("QT_NO_XDG_DESKTOP_PORTAL", "1");
+	std::unique_ptr<QGuiApplication> app;
+	if (useQApplication) app = std::make_unique<QApplication>(argc, argv);
+	else app = std::make_unique<QGuiApplication>(argc, argv);
+	if (probe) qunsetenv("QT_NO_XDG_DESKTOP_PORTAL");
+	return app;
 }
 
 // Upstream launch.cpp after the application exists: the app id surfaces carry, transparent
