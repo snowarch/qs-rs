@@ -5,9 +5,9 @@
 #
 #   scripts/bundle.sh QT_DIR OUT_DIR
 #     QT_DIR   an official Qt build, e.g. aqt's <root>/6.12.0/linux_gcc_64 (private headers included)
-#     OUT_DIR  gets qs-rs-<version>-x86_64.tar.zst and its .sha256 (build trees in OUT_DIR/.work)
+#     OUT_DIR  gets qs-rs-<version>-x86_64.tar.gz and its .sha256 (build trees in OUT_DIR/.work)
 #
-# Needs: cargo, cmake >= 3.30, meson, ninja, git, patchelf, zstd, jq, clang, lld, a C++ compiler, wayland-scanner,
+# Needs: cargo, cmake >= 3.30, meson, ninja, git, patchelf, jq, clang, lld, a C++ compiler, wayland-scanner,
 # wayland-protocols, and the headers of pam, pipewire, jemalloc, xkbcommon, wayland, ffi, expat. Build on the oldest
 # glibc and libwayland people run (ubuntu-24.04): what links here runs there and on anything newer.
 set -euo pipefail
@@ -141,6 +141,7 @@ EOF
 
 # same bytes for the same commit: names sorted, no build user, every time the commit's
 EPOCH=${SOURCE_DATE_EPOCH:-$(git -C "$ROOT" log -1 --format=%ct 2>/dev/null || date +%s)}
-tar -C "$OUT" --sort=name --owner=0 --group=0 --numeric-owner --mtime="@$EPOCH" --zstd -cf "$OUT/$NAME.tar.zst" "$NAME"
-(cd "$OUT" && sha256sum "$NAME.tar.zst" >"$NAME.tar.zst.sha256")
-echo "$OUT/$NAME.tar.zst ($(du -h "$OUT/$NAME.tar.zst" | cut -f1))"
+# gzip: every distro unpacks it with nothing more installed
+tar -C "$OUT" --sort=name --owner=0 --group=0 --numeric-owner --mtime="@$EPOCH" -cf - "$NAME" | gzip -9 -n >"$OUT/$NAME.tar.gz"
+(cd "$OUT" && sha256sum "$NAME.tar.gz" >"$NAME.tar.gz.sha256")
+echo "$OUT/$NAME.tar.gz ($(du -h "$OUT/$NAME.tar.gz" | cut -f1))"

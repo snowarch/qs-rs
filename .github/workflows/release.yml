@@ -20,7 +20,7 @@ jobs:
       - name: build deps
         run: |
           sudo apt-get update -q
-          sudo apt-get install -yq --no-install-recommends ninja-build meson patchelf zstd clang lld libclang-dev \
+          sudo apt-get install -yq --no-install-recommends ninja-build meson patchelf clang lld libclang-dev \
             libwayland-dev wayland-protocols libffi-dev libexpat1-dev libpam0g-dev libpipewire-0.3-dev \
             libjemalloc-dev libxkbcommon-dev libegl-dev libgl-dev libvulkan-dev libdbus-1-dev libfontconfig-dev \
             libfreetype-dev libglib2.0-0t64 libpulse0
@@ -37,7 +37,7 @@ jobs:
           scripts/bundle.sh "$RUNNER_TEMP/qt/$QT_VERSION/gcc_64" out
       - if: startsWith(github.ref, 'refs/tags/')
         run: |
-          gh release create "$GITHUB_REF_NAME" out/*.tar.zst out/*.sha256 --title "$GITHUB_REF_NAME" \
+          gh release create "$GITHUB_REF_NAME" out/*.tar.gz out/*.sha256 --title "$GITHUB_REF_NAME" \
             --notes-file out/qs-rs-*/SOURCES
         env:
           GH_TOKEN: ${{ github.token }}
