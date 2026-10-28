@@ -24,13 +24,15 @@ fn main() {
             .qml_file(QmlFile::from("qml/QsMenuButtonType.qml").singleton(true)),
     )
     .qt_module("Quick");
-    // SAFETY: only adds an include path.
+    // SAFETY: only adds an include path, a source file and a warning flag.
     let builder = unsafe {
         builder.cc_builder(move |cc| {
             for d in &private {
                 cc.include(d);
             }
             cc.file("src/cpp/windowprivate.cpp");
+            // GCC's false positive on cxx's generated Vec<T>() for the desktop entry lists
+            cc.flag_if_supported("-Wno-maybe-uninitialized");
         })
     };
     builder

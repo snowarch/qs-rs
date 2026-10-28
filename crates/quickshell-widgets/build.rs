@@ -8,11 +8,14 @@ fn shaders() -> PathBuf {
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let src = PathBuf::from("shaders/cliprect.frag").canonicalize().unwrap();
     println!("cargo::rerun-if-changed={}", src.display());
-    let qsb = ["/usr/lib/qt6/bin/qsb", "qsb"].into_iter().find(|p| Command::new(p).arg("--version").output().is_ok()).expect("qsb (Qt Shader Tools) not found");
+    // the Qt that QMAKE picks (the bundle's own Qt), then PATH
+    let qmake = std::env::var("QMAKE").unwrap_or_else(|_| "qmake6".into());
+    let bins = Command::new(&qmake).args(["-query", "QT_HOST_BINS"]).output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
+    let qsb = [format!("{bins}/qsb"), "qsb".into()].into_iter().find(|p| Command::new(p).arg("--version").output().is_ok()).expect("qsb (Qt Shader Tools) not found");
     let mut entries = String::new();
     for (name, define) in [("cliprect.frag.qsb", None), ("cliprect-ub.frag.qsb", Some("CONTENT_UNDER_BORDER"))] {
         let target = out.join(name);
-        let mut cmd = Command::new(qsb);
+        let mut cmd = Command::new(&qsb);
         cmd.args(["--glsl", "100es,120,150", "--batchable", "-O", "-o"]).arg(&target);
         if let Some(d) = define {
             cmd.arg(format!("-D{d}"));

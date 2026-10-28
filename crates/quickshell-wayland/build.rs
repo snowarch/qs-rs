@@ -22,8 +22,6 @@ fn protocols() -> PathBuf {
             let ok = Command::new("wayland-scanner").arg(mode).arg(&xml).arg(out.join(file)).status().expect("run wayland-scanner").success();
             assert!(ok, "wayland-scanner {mode} failed for {name}");
         }
-        // Built as C++: the header's extern "C" declarations keep the interfaces' external C linkage.
-        std::fs::write(out.join(format!("{name}-v1-protocol.cpp")), format!("#include \"{name}-v1-client-protocol.h\"\n#include \"{name}-v1-protocol.c\"\n")).unwrap();
     }
     out
 }
@@ -52,14 +50,12 @@ fn main() {
     .qt_module("WaylandClient")
     .qt_module("OpenGL")
     .include_dir(&protocols);
-    // SAFETY: only adds include paths and one C source file.
+    // SAFETY: only adds include paths.
     let builder = unsafe {
         builder.cc_builder(|cc| {
             for dir in &private {
                 cc.include(dir);
             }
-            cc.file(protocols.join("ext-session-lock-v1-protocol.cpp"));
-            cc.file(protocols.join("ext-background-effect-v1-protocol.cpp"));
         })
     };
     builder
@@ -71,4 +67,10 @@ fn main() {
         .files(["src/idle.rs", "src/toplevel.rs", "src/screencopy.rs", "src/windowcast.rs", "src/castffi.rs"])
         .build()
         .export();
+    // the scanner's code is C: as C++ its hidden visibility lands on a redeclaration and warns. After the C++ lib,
+    // so a linker that reads archives in order finds what it uses.
+    cc::Build::new()
+        .file(protocols.join("ext-session-lock-v1-protocol.c"))
+        .file(protocols.join("ext-background-effect-v1-protocol.c"))
+        .compile("qs-wayland-protocols");
 }

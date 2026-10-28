@@ -1272,6 +1272,7 @@ dependencies = [
 name = "quickshell_wayland"
 version = "0.1.0"
 dependencies = [
+ "cc",
  "cxx",
  "cxx-qt",
  "cxx-qt-build",
