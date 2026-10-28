@@ -27,7 +27,7 @@ jobs:
       - name: qt
         run: |
           pipx run aqtinstall install-qt -O "$RUNNER_TEMP/qt" linux desktop "$QT_VERSION" linux_gcc_64 \
-            -m qt5compat qtmultimedia qtshadertools qtimageformats
+            -m qt5compat qtmultimedia qtshadertools qtimageformats qtwebengine qtwebchannel qtpositioning
       - name: bundle
         run: |
           ver=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "qs-rs") | .version')

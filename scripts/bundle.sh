@@ -5,7 +5,8 @@
 #
 #   scripts/bundle.sh QT_DIR OUT_DIR
 #     QT_DIR   an official Qt build, e.g. aqt's <root>/6.12.0/linux_gcc_64 (private headers included)
-#     OUT_DIR  gets qs-rs-<version>-x86_64.tar.gz and its .sha256 (build trees in OUT_DIR/.work)
+#     OUT_DIR  gets qs-rs-<version>-x86_64.tar.gz and its .sha256 (build trees in OUT_DIR/.work); when QT_DIR has
+#              Qt WebEngine, also qs-rs-webengine-<version>-x86_64.tar.gz, unpacked over the first one
 #
 # Needs: cargo, cmake >= 3.30, meson, ninja, git, patchelf, jq, clang, lld, a C++ compiler, wayland-scanner,
 # wayland-protocols, and the headers of pam, pipewire, jemalloc, xkbcommon, wayland, ffi, expat. Build on the oldest
@@ -85,43 +86,48 @@ rm -rf "$DEST"/qml/QtQuick/{Particles,VectorImage,LocalStorage,tooling,Shapes/De
 find "$DEST/qml" -type d -name designer -prune -exec rm -rf {} +
 cp -a "$STAGE/qml/org" "$DEST/qml/"
 
-# every library they need from this Qt or the stage, plus jemalloc and libgomp (Kirigami's OpenMP): neither is on
-# every distro by default
+# what runs: the shell, Chromium's helper process, every library and plugin
+elves() { find "$1" -type f \( -name qs -o -name QtWebEngineProcess -o -name '*.so*' \) "${@:2}"; }
 needs() { ldd "$1" 2>/dev/null | awk '$3 ~ /^\// {print $3}'; }
-mapfile -t objects < <(find "$DEST" -type f \( -name 'qs' -o -name '*.so*' \))
-declare -A have=()
-while ((${#objects[@]})); do
-    obj=${objects[0]}
-    objects=("${objects[@]:1}")
-    while read -r lib; do
-        case "$lib" in "$QT"/lib/* | "$STAGE"/lib/* | */libjemalloc.so* | */libgomp.so*) ;; *) continue ;; esac
-        base=${lib##*/}
-        [ -n "${have[$base]:-}" ] && continue
-        have[$base]=1
-        cp -L "$lib" "$DEST/lib/$base"
-        objects+=("$DEST/lib/$base")
-    done < <(LD_LIBRARY_PATH="$DEST/lib:$QT/lib:$STAGE/lib" needs "$obj")
-done
-
-# each file finds lib/ from where it sits
-while read -r f; do
-    rel=$(realpath --relative-to="$(dirname "$f")" "$DEST/lib")
-    patchelf --set-rpath "\$ORIGIN/$rel" "$f"
-done < <(find "$DEST" -type f \( -name 'qs' -o -name '*.so*' \) ! -path "$DEST/lib/*")
-find "$DEST/lib" -type f -name '*.so*' -exec patchelf --set-rpath '$ORIGIN' {} \;
-
-# nothing left out: the wayland platform is there and every library resolves from the bundle or the system (the
-# build host's system libs are the ones every desktop has)
+# carry ROOT [UNDER]: every library the files in ROOT need from this Qt or the stage, plus jemalloc and libgomp
+# (Kirigami's OpenMP; neither is on every distro by default), into ROOT/lib; UNDER is the bundle ROOT unpacks over,
+# whose libraries stay there
+carry() {
+    local root=$1 under=${2:-} obj lib base objects
+    local -A have=()
+    mapfile -t objects < <(elves "$root")
+    while ((${#objects[@]})); do
+        obj=${objects[0]}
+        objects=("${objects[@]:1}")
+        while read -r lib; do
+            case "$lib" in "$QT"/lib/* | "$STAGE"/lib/* | */libjemalloc.so* | */libgomp.so*) ;; *) continue ;; esac
+            base=${lib##*/}
+            [ -n "${have[$base]:-}" ] && continue
+            have[$base]=1
+            cp -L "$lib" "$root/lib/$base"
+            objects+=("$root/lib/$base")
+        done < <(LD_LIBRARY_PATH="$root/lib${under:+:$under/lib}:$QT/lib:$STAGE/lib" needs "$obj")
+    done
+    # each file finds lib/ from where it sits
+    while read -r obj; do
+        patchelf --set-rpath "\$ORIGIN/$(realpath --relative-to="$(dirname "$obj")" "$root/lib")" "$obj"
+    done < <(elves "$root" ! -path "$root/lib/*")
+    find "$root/lib" -type f -name '*.so*' -exec patchelf --set-rpath '$ORIGIN' {} \;
+    # nothing left out: every library resolves from the bundle or the system (the build host's system libs are the
+    # ones every desktop has)
+    lib=$(elves "$root" -exec env LD_LIBRARY_PATH="${under:+$under/lib}" ldd {} + 2>/dev/null | grep 'not found' | sort -u || true)
+    [ -z "$lib" ] || { printf 'unresolved:\n%s\n' "$lib" >&2; exit 1; }
+}
+carry "$DEST"
 [ -f "$DEST/plugins/platforms/libqwayland.so" ] || { echo "no wayland platform plugin" >&2; exit 1; }
-missing=$(find "$DEST" -type f \( -name qs -o -name '*.so*' \) -exec ldd {} + 2>/dev/null | grep 'not found' | sort -u || true)
-[ -z "$missing" ] || { printf 'unresolved:\n%s\n' "$missing" >&2; exit 1; }
 
 # Qt, KDE parts, jemalloc and libgomp ride unmodified and dynamically linked: their licenses and where their sources are
 QTVER=$("$QT/bin/qmake" -query QT_VERSION)
 mkdir -p "$DEST/share/licenses"
 cp "$ROOT"/LICENSE* "$DEST/share/licenses/"
 mkdir -p "$DEST/share/licenses/qt-sbom"
-find "$QT/sbom" -name '*.spdx' ! -name '*.source.spdx' -exec cp {} "$DEST/share/licenses/qt-sbom/" \;
+find "$QT/sbom" -name '*.spdx' ! -name '*.source.spdx' ! -name 'qtwebengine*' ! -name 'qtwebchannel*' \
+    ! -name 'qtpositioning*' -exec cp {} "$DEST/share/licenses/qt-sbom/" \;
 for part in layer-shell-qt kirigami syntax-highlighting; do cp -a "$WORK/$part/LICENSES" "$DEST/share/licenses/$part"; done
 cp /usr/share/doc/libjemalloc2/copyright "$DEST/share/licenses/jemalloc"
 cp /usr/share/doc/libgomp1/copyright "$DEST/share/licenses/libgomp"
@@ -141,7 +147,29 @@ EOF
 
 # same bytes for the same commit: names sorted, no build user, every time the commit's
 EPOCH=${SOURCE_DATE_EPOCH:-$(git -C "$ROOT" log -1 --format=%ct 2>/dev/null || date +%s)}
-# gzip: every distro unpacks it with nothing more installed
-tar -C "$OUT" --sort=name --owner=0 --group=0 --numeric-owner --mtime="@$EPOCH" -cf - "$NAME" | gzip -9 -n >"$OUT/$NAME.tar.gz"
-(cd "$OUT" && sha256sum "$NAME.tar.gz" >"$NAME.tar.gz.sha256")
-echo "$OUT/$NAME.tar.gz ($(du -h "$OUT/$NAME.tar.gz" | cut -f1))"
+pack() {
+    # gzip: every distro unpacks it with nothing more installed
+    tar -C "$OUT" --sort=name --owner=0 --group=0 --numeric-owner --mtime="@$EPOCH" -cf - "$1" | gzip -9 -n >"$OUT/$1.tar.gz"
+    (cd "$OUT" && sha256sum "$1.tar.gz" >"$1.tar.gz.sha256")
+    echo "$OUT/$1.tar.gz ($(du -h "$OUT/$1.tar.gz" | cut -f1))"
+}
+pack "$NAME"
+
+# Qt WebEngine, for the sidebar's web apps: 3x the rest of Qt for one tab most people leave off, so it is its own
+# download, unpacked over the bundle (Qt finds libexec/, resources/ and translations/ from bin/qt.conf's prefix)
+[ -f "$QT/lib/libQt6WebEngineCore.so.6" ] || exit 0
+WEB=$OUT/qs-rs-webengine-$VER-x86_64
+rm -rf "$WEB"
+mkdir -p "$WEB/lib" "$WEB/libexec" "$WEB/qml" "$WEB/translations" "$WEB/share/licenses/qt-sbom"
+cp -a "$QT/libexec/QtWebEngineProcess" "$WEB/libexec/"
+printf '[Paths]\nPrefix = ..\nLibraries = lib\nPlugins = plugins\nQmlImports = qml\n' >"$WEB/libexec/qt.conf"
+cp -a "$QT/resources" "$WEB/"
+cp -a "$QT/translations/qtwebengine_locales" "$WEB/translations/"
+for mod in QtWebEngine QtWebChannel; do
+    mkdir -p "$WEB/qml/$mod" && cp -a "$QT/qml/$mod/." "$WEB/qml/$mod/"
+done
+find "$WEB/qml" -type d -name designer -prune -exec rm -rf {} +
+carry "$WEB" "$DEST"
+find "$QT/sbom" \( -name 'qtwebengine*' -o -name 'qtwebchannel*' -o -name 'qtpositioning*' \) -name '*.spdx' \
+    ! -name '*.source.spdx' -exec cp {} "$WEB/share/licenses/qt-sbom/" \;
+pack "${WEB##*/}"
