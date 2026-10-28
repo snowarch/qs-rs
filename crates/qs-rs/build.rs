@@ -1,5 +1,5 @@
 fn main() {
-    cxx_qt_build::CxxQtBuilder::new().qt_module("Widgets").qt_module("Quick").files(["src/host.rs"]).build();
+    cxx_qt_build::CxxQtBuilder::new().qt_module("Widgets").qt_module("Quick").qt_module("DBus").files(["src/host.rs"]).build();
     // The system jemalloc as the allocator for the whole process (Qt, Mesa and Rust), like
     // upstream: glibc's per-thread arenas keep what the QML engine frees (~100 MB on inir).
     // The binary's own libs come first on the link line, so it lands in DT_NEEDED ahead of libc
