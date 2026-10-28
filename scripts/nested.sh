@@ -12,7 +12,7 @@ exec env -i PATH="$PATH" LANG="${LANG:-C.UTF-8}" HOME="$ROOT/home" XDG_RUNTIME_D
   XDG_CONFIG_HOME="$ROOT/home/.config" XDG_DATA_HOME="$ROOT/home/.local/share" \
   XDG_CACHE_HOME="$ROOT/home/.cache" XDG_STATE_HOME="$ROOT/home/.local/state" \
   XDG_DATA_DIRS=/usr/local/share:/usr/share XDG_CONFIG_DIRS=/etc/xdg \
-  KWIN_SCREENSHOT_NO_PERMISSION_CHECKS=1 QSRS_OUT="$QSRS_OUT" QSRS_DELAY="$DELAY" ${QSRS_EXTRA_ENV:-} \
+  KWIN_SCREENSHOT_NO_PERMISSION_CHECKS=1 QSRS_SHOT="$(dirname "$(realpath "$0")")/kwin-shot.py" QSRS_OUT="$QSRS_OUT" QSRS_DELAY="$DELAY" ${QSRS_EXTRA_ENV:-} \
   dbus-run-session -- sh -c '
     kwin_wayland --virtual --output-count '"${QSRS_NEST_OUTPUTS:-1}"' --width '"$W"' --height '"$H"' --socket wl-qsrs --no-lockscreen >"$XDG_RUNTIME_DIR/kwin.log" 2>&1 &
     KWIN=$!
@@ -21,7 +21,7 @@ exec env -i PATH="$PATH" LANG="${LANG:-C.UTF-8}" HOME="$ROOT/home" XDG_RUNTIME_D
     "$@" &
     APP=$!
     sleep "$QSRS_DELAY"
-    spectacle -b -n -f -o "$QSRS_OUT" >/dev/null 2>&1
+    python3 "$QSRS_SHOT" "$QSRS_OUT"
     kill $APP 2>/dev/null; wait $APP 2>/dev/null
     kill $KWIN 2>/dev/null; wait $KWIN 2>/dev/null
   ' sh "$@"
