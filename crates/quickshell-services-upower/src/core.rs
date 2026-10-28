@@ -174,7 +174,12 @@ impl cxx_qt::Initialize for qobject::PowerProfilesCore {
                 Err(last.unwrap_or(zbus::Error::Unsupported))
             };
             if let Err(e) = run.await {
-                quickshell::qs_log!(warn, "quickshell.service.powerprofiles", "{e}");
+                // no daemon on this system: upstream's one line, so both runtimes log the same kind
+                if e.to_string().starts_with("org.freedesktop.DBus.Error.ServiceUnknown") {
+                    quickshell::qs_log!(warn, "quickshell.service.powerprofiles", "Could not start PowerProfilesDaemon. The PowerProfiles service will not work.");
+                } else {
+                    quickshell::qs_log!(warn, "quickshell.service.powerprofiles", "{e}");
+                }
             }
         });
     }
