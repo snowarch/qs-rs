@@ -516,11 +516,11 @@ void releaseUnusedGlyphCaches(QQuickWindow* window);
 // text uses (their font files unmap), and the pages of the fonts still in use go back to the
 // page cache (one AIRISU round trip kept ~36 MB of this). QSRS_NO_RECLAIM=1 turns all of it
 // off, QSRS_NO_FONT_RECLAIM=1 only the font part (A/B).
-inline void reclaim(QQmlEngine* engine) {
+inline void reclaim(QQmlEngine* engine, bool hiddenScenes = true) {
 	engine->collectGarbage();
 	engine->trimComponentCache();
 	for (auto* w: QGuiApplication::allWindows())
-		if (auto* qw = qobject_cast<QQuickWindow*>(w); qw && !qw->isVisible()) qw->releaseResources();
+		if (auto* qw = qobject_cast<QQuickWindow*>(w); hiddenScenes && qw && !qw->isVisible()) qw->releaseResources();
 	mallctl("arena.4096.purge", nullptr, nullptr, nullptr, 0);
 	if (qEnvironmentVariableIntValue("QSRS_NO_FONT_RECLAIM") == 1) return;
 	QFont::cleanup();
@@ -545,15 +545,17 @@ public:
 	static constexpr qint64 window = 10000;
 	static constexpr int settle = 3000;
 
-	explicit ReclaimWatcher(QQmlEngine* engine): QObject(engine), engine(engine) {
+	// burstOnly: only after a large teardown, and hidden windows keep their scenes (what made panels lose a frame).
+	explicit ReclaimWatcher(QQmlEngine* engine, bool burstOnly = false): QObject(engine), engine(engine), burstOnly(burstOnly) {
 		for (auto* t: {&this->early, &this->late, &this->quiet}) {
 			t->setSingleShot(true);
 			QObject::connect(t, &QTimer::timeout, this, [this] { this->run(); });
 		}
 		this->early.setInterval(6000);
-		this->late.setInterval(26000);
+		// burstOnly: a second pass 40 s after a teardown, for what inir lets go a while later (a family it left).
+		this->late.setInterval(burstOnly ? 40000 : 26000);
 		this->quiet.setInterval(settle);
-		qApp->installEventFilter(this);
+		if (!burstOnly) qApp->installEventFilter(this);
 		if (previousRemove == nullptr && qtHookData[removeHook] != reinterpret_cast<quintptr>(&removed)) {
 			previousRemove = reinterpret_cast<RemoveCallback>(qtHookData[removeHook]);
 			qtHookData[removeHook] = reinterpret_cast<quintptr>(&removed);
@@ -625,15 +627,17 @@ private:
 		}
 		static const bool log = qEnvironmentVariableIntValue("QSRS_RECLAIM_LOG") == 1;
 		if (log) print_memory(sender() == &this->quiet ? "burst" : "hidden");
-		reclaim(this->engine);
+		reclaim(this->engine, !this->burstOnly);
 		if (log) print_memory("reclaimed");
 		if (sender() == &this->quiet) {
+			if (this->burstOnly) this->late.start();
 			told.store(false);
 			destroyed.store(0, std::memory_order_relaxed);
 		}
 	}
 
 	QQmlEngine* engine;
+	bool burstOnly;
 	QTimer early;
 	QTimer late;
 	QTimer quiet;
@@ -773,11 +777,13 @@ inline void watch_memory_peaks() {
 	if (PeakWatcher::instance == nullptr) PeakWatcher::instance = new PeakWatcher();
 }
 
-// Opt-in (QSRS_RECLAIM=1): dropping hidden windows' scenes, the component cache and the glyph caches made every
-// panel, tray menu and morph rebuild on its next show (a lost first frame, measured on the Control Center).
+// After a large teardown (a family switch, a closed Settings let go) the dead tree's compiled components, JS heap and
+// pages go back: without it two rounds of inir's three families kept +57 MB with the object count back at its start.
+// QSRS_RECLAIM=1 also reclaims when a window hides, dropping hidden windows' scenes: that made every panel, tray menu
+// and morph rebuild on its next show (a lost first frame, measured on the Control Center). QSRS_NO_RECLAIM=1: none.
 inline void schedule_reclaim(QQmlEngine* engine) {
-	if (qEnvironmentVariableIntValue("QSRS_RECLAIM") != 1) return;
-	new ReclaimWatcher(engine);
+	if (qEnvironmentVariableIntValue("QSRS_NO_RECLAIM") == 1) return;
+	new ReclaimWatcher(engine, qEnvironmentVariableIntValue("QSRS_RECLAIM") != 1);
 }
 
 inline void schedule_census(QQmlEngine* engine) {
