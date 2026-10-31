@@ -21,6 +21,9 @@ class FieldRegion: public PendingRegion {
 	/// Eight numbers a body: x, y, width, height, radius (0 under a Kiri Design: its own), fuse, first
 	/// and second join (0 none, -1 the frame, n the body at n - 1).
 	Q_PROPERTY(QList<qreal> bodies READ bodies WRITE setBodies NOTIFY fieldChanged);
+	/// Four radii a body (upper left, upper right, lower right, lower left), body by body as in `bodies`: a menu nests the
+	/// corner by a frame corner or a fillet and keeps its own at the others. Left short, a body's corners take its radius.
+	Q_PROPERTY(QList<qreal> cornerRadii READ cornerRadii WRITE setCornerRadii NOTIFY fieldChanged);
 	Q_PROPERTY(bool framed MEMBER mFramed NOTIFY fieldChanged);
 	Q_PROPERTY(bool joinsFrame MEMBER mJoinsFrame NOTIFY fieldChanged);
 	Q_PROPERTY(qreal windowWidth MEMBER mWidthF NOTIFY fieldChanged);
@@ -40,6 +43,12 @@ public:
 	}
 
 	[[nodiscard]] QList<qreal> bodies() const { return this->mBodies; }
+	[[nodiscard]] QList<qreal> cornerRadii() const { return this->mCornerRadii; }
+	void setCornerRadii(const QList<qreal>& corners) {
+		if (corners == this->mCornerRadii) return;
+		this->mCornerRadii = corners;
+		emit this->fieldChanged();
+	}
 	void setBodies(const QList<qreal>& bodies) {
 		if (bodies == this->mBodies) return;
 		this->mBodies = bodies;
@@ -77,7 +86,9 @@ signals:
 private:
 	static constexpr double FAR = 1e9;
 	struct Body {
-		double cx, cy, hx, hy, r, k;
+		double cx, cy, hx, hy;
+		double r[4]; // upper left, upper right, lower right, lower left
+		double k;
 		int j0, j1;
 		double top, bottom, left, right;
 	};
@@ -118,9 +129,11 @@ private:
 		return dist - e;
 	}
 
+	// IrisField.frag bodyBox: each quadrant is the box with its own corner's radius all round.
 	[[nodiscard]] double bodyDistance(const Body& b, double px, double py) const {
-		if (this->mChamfer <= 0.0) return squircleBox(px, py, b.cx, b.cy, b.hx, b.hy, b.r);
-		return kiriBox(px, py, b.cx, b.cy, b.hx, b.hy, b.r > 0.5 ? b.r : this->mChamfer / 1.5);
+		double r = b.r[py < b.cy ? (px < b.cx ? 0 : 1) : (px < b.cx ? 3 : 2)];
+		if (this->mChamfer <= 0.0) return squircleBox(px, py, b.cx, b.cy, b.hx, b.hy, r);
+		return kiriBox(px, py, b.cx, b.cy, b.hx, b.hy, r > 0.5 ? r : this->mChamfer / 1.5);
 	}
 
 	// How far the side bands swell at a row, 0..1 of their reach (IrisField.frag's alongY), kept for the row.
@@ -199,7 +212,10 @@ private:
 		double reachK = 0.0;
 		for (qsizetype n = 0; n + 7 < this->mBodies.size(); n += 8) {
 			const auto* v = this->mBodies.constData() + n;
-			Body b {v[0] + v[2] / 2, v[1] + v[3] / 2, v[2] / 2, v[3] / 2, v[4], std::max(0.0, v[5]), int(v[6]), int(v[7]), 0, 0, 0, 0};
+			qsizetype at = n / 2;
+			const auto* c = at + 3 < this->mCornerRadii.size() ? this->mCornerRadii.constData() + at : nullptr;
+			Body b {v[0] + v[2] / 2, v[1] + v[3] / 2, v[2] / 2, v[3] / 2, {c ? c[0] : v[4], c ? c[1] : v[4], c ? c[2] : v[4], c ? c[3] : v[4]},
+				std::max(0.0, v[5]), int(v[6]), int(v[7]), 0, 0, 0, 0};
 			reachK = std::max(reachK, b.k);
 			this->parsed.push_back(b);
 		}
@@ -331,6 +347,7 @@ private:
 	}
 
 	QList<qreal> mBodies;
+	QList<qreal> mCornerRadii;
 	bool mFramed = false;
 	bool mJoinsFrame = true;
 	qreal mWidthF = 0, mHeightF = 0, mBand = 0, mCorner = 0, mChamfer = 0, mInset = 0.5;
