@@ -111,12 +111,12 @@ private:
 		return (l - reach) / std::hypot(x2 * qx / l3, y2 * qy / l3);
 	}
 
-	// IrisField.frag kiriBox (a Kiri Design, AIRISU): upper-left and lower-right round, upper-right and lower-left cut at
-	// 45° by 1.5 radius with both ends eased by 0.55 radius; the radius gives way to 0.56 of the shorter half.
-	static double kiriBox(double px, double py, double cx, double cy, double hx, double hy, double radius) {
+	// IrisField.frag kiriBox (a Kiri Design, AIRISU): a corner is round, or with `cut` cut at 45° by 1.5 radius with both
+	// ends eased by 0.55 radius; the radius gives way to 0.56 of the shorter half.
+	static double kiriBox(double px, double py, double cx, double cy, double hx, double hy, double radius, bool cut) {
 		double dx = px - cx, dy = py - cy;
 		double r = std::min(radius, 0.56 * std::min(hx, hy));
-		if (dx * dy >= 0.0 || r < 0.5) return squircleBox(px, py, cx, cy, hx, hy, r);
+		if (!cut || r < 0.5) return squircleBox(px, py, cx, cy, hx, hy, r);
 		double e = 0.55 * r, qx = std::abs(dx), qy = std::abs(dy), sx = hx - e, sy = hy - e;
 		double l = hx + hy - 1.5 * r - e * 1.41421356;
 		double inside = std::max(std::max(qx - sx, qy - sy), (qx + qy - l) * 0.70710678);
@@ -129,11 +129,12 @@ private:
 		return dist - e;
 	}
 
-	// IrisField.frag bodyBox: each quadrant is the box with its own corner's radius all round.
+	// IrisField.frag bodyBox: each quadrant is the box with its own corner's radius all round; a negative one is cut.
 	[[nodiscard]] double bodyDistance(const Body& b, double px, double py) const {
-		double r = b.r[py < b.cy ? (px < b.cx ? 0 : 1) : (px < b.cx ? 3 : 2)];
+		double lane = b.r[py < b.cy ? (px < b.cx ? 0 : 1) : (px < b.cx ? 3 : 2)];
+		double r = std::abs(lane);
 		if (this->mChamfer <= 0.0) return squircleBox(px, py, b.cx, b.cy, b.hx, b.hy, r);
-		return kiriBox(px, py, b.cx, b.cy, b.hx, b.hy, r > 0.5 ? r : this->mChamfer / 1.5);
+		return kiriBox(px, py, b.cx, b.cy, b.hx, b.hy, r > 0.5 ? r : this->mChamfer / 1.5, lane < 0.0);
 	}
 
 	// How far the side bands swell at a row, 0..1 of their reach (IrisField.frag's alongY), kept for the row.
@@ -160,7 +161,7 @@ private:
 		}
 		double cx = (lx + hx) * 0.5, cy = (ly + hy) * 0.5;
 		double ex = std::max((hx - lx) * 0.5, 0.0), ey = std::max((hy - ly) * 0.5, 0.0);
-		if (this->mChamfer > 0.0) return -kiriBox(px, py, cx, cy, ex, ey, this->mCorner);
+		if (this->mChamfer > 0.0) return -kiriBox(px, py, cx, cy, ex, ey, this->mCorner, (px - cx) * (py - cy) < 0.0);
 		return -squircleBox(px, py, cx, cy, ex, ey, this->mCorner);
 	}
 
