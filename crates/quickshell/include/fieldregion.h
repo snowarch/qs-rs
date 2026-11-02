@@ -1,6 +1,6 @@
 #pragma once
 // FieldRegion (qs-rs only, feature "field-region"): the compositor blur region of an iRiS field, rasterised on every
-// build from the distances inir's IrisField.frag draws (squircle bodies or a Kiri Design's eased cuts, the frame
+// build from the distances inir's IrisField.frag draws (squircle bodies, the frame
 // band with its music wave, polynomial joins). A pixel is held when its centre lies `inset` inside the
 // silhouette. inir's QML walk of the same shape was coarse while anything moved and exact only 96 ms after rest; here
 // each row is traced with the steps the distance allows, so it is exact on every frame.
@@ -18,7 +18,7 @@
 class FieldRegion: public PendingRegion {
 	Q_OBJECT;
 	QML_NAMED_ELEMENT(FieldRegion);
-	/// Eight numbers a body: x, y, width, height, radius (0 under a Kiri Design: its own), fuse, first
+	/// Eight numbers a body: x, y, width, height, radius, fuse, first
 	/// and second join (0 none, -1 the frame, n the body at n - 1).
 	Q_PROPERTY(QList<qreal> bodies READ bodies WRITE setBodies NOTIFY fieldChanged);
 	/// Four radii a body (upper left, upper right, lower right, lower left), body by body as in `bodies`: a menu nests the
@@ -30,8 +30,6 @@ class FieldRegion: public PendingRegion {
 	Q_PROPERTY(qreal windowHeight MEMBER mHeightF NOTIFY fieldChanged);
 	Q_PROPERTY(qreal band MEMBER mBand NOTIFY fieldChanged);
 	Q_PROPERTY(qreal cornerRadius MEMBER mCorner NOTIFY fieldChanged);
-	/// A Kiri Design's cut (0: round bodies): bodies with no radius take cut / 1.5, joins at most 2 cut deep.
-	Q_PROPERTY(qreal chamfer MEMBER mChamfer NOTIFY fieldChanged);
 	Q_PROPERTY(qreal inset MEMBER mInset NOTIFY fieldChanged);
 	/// How far the band's inner line swells on each side (left, top, right, bottom) and the swell's phase.
 	Q_PROPERTY(QVector4D wave MEMBER mWave NOTIFY fieldChanged);
@@ -111,30 +109,9 @@ private:
 		return (l - reach) / std::hypot(x2 * qx / l3, y2 * qy / l3);
 	}
 
-	// IrisField.frag kiriBox (a Kiri Design, AIRISU): a corner is round, or with `cut` cut at 45° by 1.5 radius with both
-	// ends eased by 0.55 radius; the radius gives way to 0.56 of the shorter half.
-	static double kiriBox(double px, double py, double cx, double cy, double hx, double hy, double radius, bool cut) {
-		double dx = px - cx, dy = py - cy;
-		double r = std::min(radius, 0.56 * std::min(hx, hy));
-		if (!cut || r < 0.5) return squircleBox(px, py, cx, cy, hx, hy, r);
-		double e = 0.55 * r, qx = std::abs(dx), qy = std::abs(dy), sx = hx - e, sy = hy - e;
-		double l = hx + hy - 1.5 * r - e * 1.41421356;
-		double inside = std::max(std::max(qx - sx, qy - sy), (qx + qy - l) * 0.70710678);
-		if (inside <= 0.0) return inside - e;
-		double ax = sx, ay = l - sx, bx = l - sy, by = sy, abx = bx - ax, aby = by - ay;
-		double t = std::clamp(((qx - ax) * abx + (qy - ay) * aby) / (abx * abx + aby * aby), 0.0, 1.0);
-		double dist = std::hypot(qx - ax - abx * t, qy - ay - aby * t);
-		dist = std::min(dist, qy <= ay ? std::abs(qx - sx) : std::hypot(qx - ax, qy - ay));
-		dist = std::min(dist, qx <= bx ? std::abs(qy - sy) : std::hypot(qx - bx, qy - by));
-		return dist - e;
-	}
-
-	// IrisField.frag bodyBox: each quadrant is the box with its own corner's radius all round; a negative one is cut.
+	// IrisField.frag bodyBox: each quadrant is the box with its own corner's radius all round.
 	[[nodiscard]] double bodyDistance(const Body& b, double px, double py) const {
-		double lane = b.r[py < b.cy ? (px < b.cx ? 0 : 1) : (px < b.cx ? 3 : 2)];
-		double r = std::abs(lane);
-		if (this->mChamfer <= 0.0) return squircleBox(px, py, b.cx, b.cy, b.hx, b.hy, r);
-		return kiriBox(px, py, b.cx, b.cy, b.hx, b.hy, r > 0.5 ? r : this->mChamfer / 1.5, lane < 0.0);
+		return squircleBox(px, py, b.cx, b.cy, b.hx, b.hy, b.r[py < b.cy ? (px < b.cx ? 0 : 1) : (px < b.cx ? 3 : 2)]);
 	}
 
 	// How far the side bands swell at a row, 0..1 of their reach (IrisField.frag's alongY), kept for the row.
@@ -161,13 +138,10 @@ private:
 		}
 		double cx = (lx + hx) * 0.5, cy = (ly + hy) * 0.5;
 		double ex = std::max((hx - lx) * 0.5, 0.0), ey = std::max((hy - ly) * 0.5, 0.0);
-		if (this->mChamfer > 0.0) return -kiriBox(px, py, cx, cy, ex, ey, this->mCorner, (px - cx) * (py - cy) < 0.0);
 		return -squircleBox(px, py, cx, cy, ex, ey, this->mCorner);
 	}
 
 	[[nodiscard]] double smoothUnion(double a, double b, double k) const {
-		// A Kiri Design keeps its shoulders tight: the fillet at most twice its cut (IrisField.frag smoothUnion).
-		if (this->mChamfer > 0.0) k = std::min(k, 2.0 * this->mChamfer);
 		if (k <= 0.001) return std::min(a, b);
 		double h = std::clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
 		return b + (a - b) * h - k * h * (1.0 - h);
@@ -244,8 +218,7 @@ private:
 		// Rows that cross only the band's straight sides, past the opening's corners (and past the top and bottom swell),
 		// hold what lies outside the box's sides: still, one traced row stands for the rest; waving, each row is its
 		// sides' swell, read straight off the distance (tracing all 1080 rows cost ~4.8 ms a frame while music played).
-		// A Kiri opening's cut (1.5 r and its ease) reaches further along a side than its round corner's squircle.
-		double corner = this->mChamfer > 0.0 ? this->mCorner * 2.1 : this->mCorner * 1.8409;
+		double corner = this->mCorner * 1.8409;
 		double swellTop = this->waving ? this->mWave.y() : 0.0, swellBottom = this->waving ? this->mWave.w() : 0.0;
 		int plainFrom = int(std::ceil(this->mBand + swellTop + corner + 2));
 		int plainTo = int(std::floor(height - this->mBand - swellBottom - corner - 2));
@@ -351,7 +324,7 @@ private:
 	QList<qreal> mCornerRadii;
 	bool mFramed = false;
 	bool mJoinsFrame = true;
-	qreal mWidthF = 0, mHeightF = 0, mBand = 0, mCorner = 0, mChamfer = 0, mInset = 0.5;
+	qreal mWidthF = 0, mHeightF = 0, mBand = 0, mCorner = 0, mInset = 0.5;
 	QVector4D mWave;
 	qreal mWaveClock = 0;
 	mutable std::vector<Body> parsed;
