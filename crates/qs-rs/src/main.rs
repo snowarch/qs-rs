@@ -514,6 +514,7 @@ fn run_shell(cli: &cli::Cli, config: PathBuf, started: std::time::Instant) -> i3
         host::ffi::watch_memory_peaks();
         let code = host::ffi::exec_app(app.pin_mut());
         quickshell_wayland::windowcast::stop_all(std::time::Duration::from_millis(500));
+        cachesync::flush();
         code
     };
     if _vfs_lock.is_none() {

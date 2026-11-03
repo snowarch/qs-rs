@@ -94,6 +94,26 @@ pub fn release() {
     wake(dir, &mut st);
 }
 
+/// The shell is quitting cleanly: sync what is still waiting for its quiet time and drop the marker, so a shell that
+/// exits right after writing (a restart, a test) does not throw its cache away on the next start.
+pub fn flush() {
+    let Some(dir) = DIR.get() else { return };
+    if WORKER.load(Ordering::Relaxed) {
+        return;
+    }
+    let mut st = STATE.lock().unwrap();
+    if !st.dirty || st.holds > 0 {
+        return;
+    }
+    if let Ok(d) = std::fs::File::open(dir) {
+        use std::os::fd::AsRawFd;
+        unsafe { libc::syncfs(d.as_raw_fd()) };
+    }
+    let _ = std::fs::remove_file(dir.join(MARKER));
+    st.dirty = false;
+    st.generation += 1;
+}
+
 fn prune(dir: &Path, keep: Duration) {
     let maps = std::fs::read_to_string("/proc/self/maps").unwrap_or_default();
     let used: std::collections::HashSet<&Path> =
