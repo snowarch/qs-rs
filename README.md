@@ -18,7 +18,8 @@ iNiR is a few pieces, each with one job:
 - [inir-hub](https://github.com/snowarch/inir-hub): the families, themes and widgets you install, served at
   [inir.space/hub](https://inir.space/hub).
 
-iNiR still runs on stock Quickshell today; qs-rs is where it's headed.
+iNiR v2.33 runs on stock Quickshell. Its next update installs qs-rs prebuilt, with its own Qt, and falls back to
+Quickshell on a machine where qs-rs doesn't start.
 
 ## Numbers
 
@@ -56,14 +57,19 @@ Everything iNiR uses works, all three families, as a daily session. Missing, bec
 `IdleInhibitor`, `DataStream`, `SocketServer`, the widget wrappers; Hyprland is IPC only. Out of scope: I3/Sway,
 Greetd, X11.
 
-## Build
+## Get it
+
+Every `v*` tag builds a bundle on CI: the binary plus the Qt 6.12 it was built against, so it runs the same on every
+distro ([Releases](https://github.com/snowarch/qs-rs/releases)). iNiR's setup and update install the one its base pins
+by sha256; nothing compiles on your machine. iNiR's launcher picks it up from `INIR_QS_BIN` and falls back to
+Quickshell when it's missing.
+
+To build it yourself:
 
 ```sh
 cargo build --release      # Qt 6, LayerShellQt and a C++ compiler
 scripts/test.sh            # every tests/qml/*.qml, isolated HOME and XDG dirs
 ```
-
-iNiR's launcher picks it up from `INIR_QS_BIN` and falls back to Quickshell when it's missing.
 
 ## License and credits
 
