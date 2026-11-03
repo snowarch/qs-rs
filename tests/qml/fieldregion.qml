@@ -2,7 +2,8 @@ import QtQuick
 import Quickshell
 
 // FieldRegion holds a pixel when its centre lies half a pixel inside the field inir's IrisField.frag draws:
-// straight edges, the frame band, a body's fillet into the band, a squircle corner and a chamfer cut.
+// straight edges, the frame band, a body's fillet into the band and a squircle corner (the cut corner left the
+// region with 9da5a73: a body is rounded or square).
 ShellRoot {
     id: root
     FieldRegion {
@@ -35,12 +36,6 @@ ShellRoot {
         // Its upper-right corner nested tight, the other three its own 30.
         bodies: [100, 100, 200, 120, 30, 0, 0, 0]
         cornerRadii: [30, 4, 30, 30]
-    }
-    FieldRegion {
-        id: cut
-        windowWidth: 400; windowHeight: 300
-        chamfer: 10
-        bodies: [100, 100, 100, 100, 0, 0, 0, 0]
     }
     FieldRegion {
         id: wave
@@ -118,9 +113,6 @@ ShellRoot {
             [far.holds(102, 400), true], [far.holds(130, 450), true], [far.holds(350, 320), true], [far.holds(98, 400), false],
             // A radius per corner: only the nested one comes in tight.
             [corners.holds(102, 102), false], [corners.holds(297, 102), true], [corners.holds(102, 217), false], [corners.holds(297, 217), false],
-            // Kiri rounds the upper-left and lower-right corners (cut / 1.5) and cuts the other two.
-            [cut.holds(101, 101), false], [cut.holds(104, 104), true], [cut.holds(198, 101), false], [cut.holds(101, 198), false],
-            [cut.holds(198, 198), false], [cut.holds(195, 195), true],
         ].concat(root.waveChecks())
         const bad = checks.map((c, i) => c[0] === c[1] ? -1 : i).filter(i => i >= 0)
         if (bad.length) { console.log("fieldregion: failed checks", bad.join(","), JSON.stringify(framed.stats())); Qt.exit(1) }

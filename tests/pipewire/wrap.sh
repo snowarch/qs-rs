@@ -1,5 +1,6 @@
 #!/bin/sh
 # Runs "$@" against a private PipeWire daemon inside the isolated XDG_RUNTIME_DIR.
+command -v pipewire >/dev/null || { echo "needs a PipeWire daemon (pipewire)"; exit 77; }
 conf=$(realpath "$(dirname "$0")/pipewire.conf")
 pipewire -c "$conf" >"$XDG_RUNTIME_DIR/pipewire.log" 2>&1 &
 pw=$!

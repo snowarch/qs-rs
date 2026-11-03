@@ -30,7 +30,8 @@ pub mod ffi {
         fn exec_app(app: Pin<&mut QGuiApplication>) -> i32;
         fn new_engine(import_path: &QString) -> *mut QQmlEngine;
         fn check_file(engine: Pin<&mut QQmlEngine>, path: &QString) -> String;
-        fn qml_cache_state(cache_dir: &str, source: &str) -> u8;
+        fn sha1_hex(text: &str) -> String;
+        fn md5_of(data: &[u8]) -> Vec<u8>;
         unsafe fn create_root(engine: Pin<&mut QQmlEngine>, path: &QString) -> *mut QObject;
         unsafe fn install_reload(engine: *mut QQmlEngine, root: *mut QObject, import_path: &QString, entry: &QString);
         fn request_reload(hard: bool);

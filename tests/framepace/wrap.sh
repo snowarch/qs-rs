@@ -1,5 +1,6 @@
 # Frame pacing and the frame meter on a headless KWin (60 Hz). $1 = qs-rs, $2 = qml.
 # The meter is turned on over IPC (`qs frames start FILE`), as a script would on a live shell.
+command -v kwin_wayland >/dev/null || { echo "needs a headless KWin (kwin_wayland)"; exit 77; }
 out=$(mktemp -d)
 qs=$(realpath "$1"); qml=$(realpath "$2")
 QSRS_NEST_W=800 QSRS_NEST_H=600 QSRS_NEST_ROOT=$out/nest sh scripts/nested.sh $out/shot.png 8 sh -c '

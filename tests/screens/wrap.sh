@@ -1,4 +1,5 @@
 # Per-screen panels on two outputs, judged on a screenshot of a headless KWin. $1 = qs-rs, $2 = qml.
+command -v kwin_wayland >/dev/null || { echo "needs a headless KWin (kwin_wayland)"; exit 77; }
 out=$(mktemp -d)
 QSRS_NEST_W=800 QSRS_NEST_H=600 QSRS_NEST_OUTPUTS=2 QSRS_NEST_ROOT=$out/nest sh scripts/nested.sh $out/shot.png 4 "$1" -p "$2" >/dev/null 2>&1
 python3 - "$out/shot.png" <<'PY'

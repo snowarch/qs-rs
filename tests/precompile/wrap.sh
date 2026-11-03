@@ -14,12 +14,12 @@ parts 0 v1
 { printf 'import QtQuick\nimport Quickshell\nimport "parts"\nShellRoot {\n'
   i=0; while [ $i -lt 130 ]; do printf '    Part%d {}\n' $i; i=$((i + 1)); done
   printf '    Component.onCompleted: Qt.exit(0)\n}\n'; } > "$dir/shell.qml"
-start() { NO_COLOR=1 timeout 15 "$bin" -p "$dir/shell.qml" 2>&1; }
+start() { NO_COLOR=1 timeout 15 "$bin" -v -p "$dir/shell.qml" 2>&1; }
 ahead() { echo "$1" | grep -o "Compiled [0-9]* QML files ahead in [0-9]* workers" ; }
-fail() { echo "FAIL: $1"; echo "$2" | tail -15; exit 1; }
+fail() { echo "FAIL: $1"; echo "$2" | grep -E "QML cache|ahead|ERROR|WARN" | head -12; exit 1; }
 
 out=$(start) || fail "first start did not run the shell" "$out"
-ahead "$out" | grep -q "Compiled 131 QML files ahead" || fail "first start did not compile every file ahead" "$out"
+echo "$out" | grep -q "Compiled 131 QML files ahead in [0-9]* workers, [0-9]* ms$" || fail "first start did not compile every file ahead" "$out"
 out=$(start) || fail "a warm start did not run the shell" "$out"
 [ -z "$(ahead "$out")" ] || fail "a warm start compiled ahead" "$out"
 parts 125 v2

@@ -1,6 +1,7 @@
 # A window held by two BackgroundEffects, in a nested niri (the compositor that enforces one
 # effect object per wl_surface). $1 = qs-rs, $2 = qml. The client's protocol log says which
 # region each blur request sent: the second holder's while it holds, the window's own after.
+command -v niri >/dev/null || { echo "needs a nested niri (niri)"; exit 77; }
 out=$(mktemp -d)
 QSRS_NEST_ROOT=$out/nest sh scripts/niri-nested.sh 3 env WAYLAND_DEBUG=client "$(realpath "$1")" -p "$(realpath "$2")"
 python3 - "$out/nest/app.log" <<'PY'

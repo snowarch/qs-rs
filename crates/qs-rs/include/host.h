@@ -840,23 +840,18 @@ inline rust::String check_file(QQmlEngine& engine, const QString& path) {
 	return rust::String(out.join('\n').toStdString());
 }
 
-// Whether Qt's disk cache holds `source` compiled: 0 no entry, 1 an entry compiled from other contents, 2 current.
-// Qt 6.12 names the entry sha1(local path) + "." + the suffix after the name's first dot + "c", and takes it while the
-// md5 of the source equals the 16 bytes at offset 28 of its header (the time stamp there is -1). Reentrant.
-inline uint8_t qml_cache_state(rust::Str cacheDir, rust::Str source) {
-	const QString path = QString::fromUtf8(source.data(), qsizetype(source.size()));
-	const QString suffix = QFileInfo(path + QLatin1Char('c')).completeSuffix();
-	const QByteArray name = QCryptographicHash::hash(path.toUtf8(), QCryptographicHash::Sha1).toHex();
-	QFile entry(QString::fromUtf8(cacheDir.data(), qsizetype(cacheDir.size())) + QLatin1Char('/') + QString::fromLatin1(name)
-	            + QLatin1Char('.') + suffix);
-	if (!entry.open(QIODevice::ReadOnly)) return 0;
-	const QByteArray head = entry.read(44);
-	if (head.size() < 44 || !head.startsWith("qv4cdata")) return 0;
-	QFile file(path);
-	if (!file.open(QIODevice::ReadOnly)) return 0;
-	QCryptographicHash md5(QCryptographicHash::Md5);
-	md5.addData(&file);
-	return md5.result() == head.mid(28, 16) ? 2 : 1;
+// Pure hashes for the precompile planner (precompile.rs), which runs before QApplication on a thread of its own and
+// so must create no QObject (the first thread to make one becomes Qt's main thread).
+inline rust::String sha1_hex(rust::Str text) {
+	const auto sum = QCryptographicHash::hash(QByteArrayView(text.data(), qsizetype(text.size())), QCryptographicHash::Sha1);
+	return rust::String(sum.toHex().toStdString());
+}
+inline rust::Vec<uint8_t> md5_of(rust::Slice<const uint8_t> data) {
+	const auto sum = QCryptographicHash::hash(
+	        QByteArrayView(reinterpret_cast<const char*>(data.data()), qsizetype(data.size())), QCryptographicHash::Md5);
+	rust::Vec<uint8_t> out;
+	for (char c: sum) out.push_back(uint8_t(c));
+	return out;
 }
 
 // Creates the root object from a local file; prints errors and returns null on failure.

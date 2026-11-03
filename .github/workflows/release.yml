@@ -44,10 +44,16 @@ jobs:
           fi
           scripts/bundle.sh "$RUNNER_TEMP/qt/$QT_VERSION/gcc_64" out
       - name: tests
-        # Every tests/qml/*.qml through the bundle people get, on its own offscreen platform.
+        # Every tests/qml/*.qml through the bundle people get (with its WebEngine part, as webapps get it), on its own
+        # offscreen platform. Tests that need a compositor or a system service skip themselves here and say so. The
+        # runner forbids the user namespaces Chromium's sandbox needs.
         run: |
-          mkdir -p "$RUNNER_TEMP/b" && tar -xzf out/qs-rs-[0-9]*-x86_64.tar.gz -C "$RUNNER_TEMP/b"
-          QSRS_BIN=$(ls "$RUNNER_TEMP"/b/*/bin/qs) QSRS_ISO_ROOT=/tmp/qi QSRS_RUNTIME=/tmp/qr QSRS_TIMEOUT=60 scripts/test.sh
+          mkdir -p "$RUNNER_TEMP/b"
+          for t in out/qs-rs-[0-9]*-x86_64.tar.gz out/qs-rs-webengine-*-x86_64.tar.gz; do
+            tar -xzf "$t" -C "$RUNNER_TEMP/b" --strip-components=1
+          done
+          QSRS_BIN=$RUNNER_TEMP/b/bin/qs QSRS_ISO_ROOT=/tmp/qi QSRS_RUNTIME=/tmp/qr QSRS_TIMEOUT=60 \
+            QSRS_EXTRA_ENV=QTWEBENGINE_DISABLE_SANDBOX=1 scripts/test.sh
       - uses: actions/upload-artifact@v7
         with:
           name: qs-rs-x86_64

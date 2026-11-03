@@ -7,7 +7,7 @@
 //! What gets compiled: after an update, the files the cache holds compiled from other contents (what the shell
 //! loaded before and changed); on a first start, with nothing compiled yet, every QML file of the shell.
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -27,17 +27,34 @@ pub struct Workers {
     started: Instant,
 }
 
-/// The QML files (relative to the shell) to compile before the shell loads.
-fn plan(qml: Vec<PathBuf>, vfs: &Path, cache: &str) -> Vec<PathBuf> {
+/// Whether Qt's disk cache holds `source` compiled: 0 no entry, 1 an entry compiled from other contents, 2 current.
+/// Qt 6.12 names the entry sha1(local path) + "." + the suffix after the name's first dot + "c", and takes it while the
+/// md5 of the source equals the 16 bytes at offset 28 of its header (the time stamp there is -1).
+fn cache_state(cache: &Path, source: &Path) -> u8 {
+    let name = source.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let suffix = name.split_once('.').map_or(String::new(), |(_, s)| format!("{s}c"));
+    let entry = cache.join(format!("{}.{suffix}", crate::host::ffi::sha1_hex(&source.to_string_lossy())));
+    let mut head = [0u8; 44];
+    let Ok(mut file) = std::fs::File::open(&entry) else { return 0 };
+    if file.read_exact(&mut head).is_err() || &head[..8] != b"qv4cdata" {
+        return 0;
+    }
+    let Ok(text) = std::fs::read(source) else { return 0 };
+    if crate::host::ffi::md5_of(&text).as_slice() == &head[28..44] { 2 } else { 1 }
+}
+
+/// The QML files (relative to the shell) to compile before the shell loads, and what the cache held.
+fn plan(qml: Vec<PathBuf>, vfs: &Path, cache: &Path) -> (Vec<PathBuf>, String) {
     let (mut missing, mut stale, mut current) = (Vec::new(), Vec::new(), 0);
     for rel in qml {
-        match crate::host::ffi::qml_cache_state(cache, &vfs.join(&rel).to_string_lossy()) {
+        match cache_state(cache, &vfs.join(&rel)) {
             0 => missing.push(rel),
             1 => stale.push(rel),
             _ => current += 1,
         }
     }
-    if current + stale.len() == 0 { missing } else { stale }
+    let summary = format!("QML cache: {current} current, {} changed, {} not compiled", stale.len(), missing.len());
+    (if current == 0 && stale.is_empty() { missing } else { stale }, summary)
 }
 
 fn available_mb() -> Option<u64> {
@@ -51,7 +68,7 @@ pub fn start(scan: &crate::scan::Scan, vfs_root: &Path, config: &Path) -> Option
     if std::env::var_os("QML_DISABLE_DISK_CACHE").is_some() || std::env::var_os("QSRS_NO_PRECOMPILE").is_some() {
         return None;
     }
-    let cache = crate::cachesync::qt_cache_dir()?.to_string_lossy().into_owned();
+    let cache = crate::cachesync::qt_cache_dir()?;
     let min = std::env::var("QSRS_PRECOMPILE_MIN").ok().and_then(|v| v.parse().ok()).unwrap_or(MIN_FILES);
     let qml: Vec<PathBuf> = scan
         .files
@@ -66,28 +83,30 @@ pub fn start(scan: &crate::scan::Scan, vfs_root: &Path, config: &Path) -> Option
     let thread = std::thread::Builder::new()
         .name("qs-precompile".into())
         .spawn(move || {
-            let files = plan(qml, &vfs_root.join("qs"), &cache);
-            if files.len() < min {
-                return None;
-            }
+            let (files, summary) = plan(qml, &vfs_root.join("qs"), &cache);
             let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
             let memory = available_mb().map_or(MAX_WORKERS, |mb| (mb / WORKER_MB / 2) as usize);
             let n = cores.saturating_sub(1).min(MAX_WORKERS).min(memory).min(files.len().div_ceil(FILES_PER_WORKER));
-            if n < 2 {
-                return None;
-            }
-            spawn(&files, n, &vfs_root, &config)
+            let summary = format!("{summary}; {} to compile ahead, {n} workers ({cores} cores)", files.len());
+            let workers = if files.len() < min || n < 2 { None } else { spawn(&files, n, &vfs_root, &config) };
+            (workers, summary)
         })
         .ok()?;
     Some(Pending(thread))
 }
 
-pub struct Pending(std::thread::JoinHandle<Option<Workers>>);
+pub struct Pending(std::thread::JoinHandle<(Option<Workers>, String)>);
 
 impl Pending {
     pub fn wait(self) {
-        if let Ok(Some(workers)) = self.0.join() {
-            workers.wait();
+        match self.0.join() {
+            Ok((workers, summary)) => {
+                quickshell::qs_log!(debug, "quickshell.qsrs", "{summary}");
+                if let Some(workers) = workers {
+                    workers.wait();
+                }
+            }
+            Err(_) => quickshell::qs_log!(warn, "quickshell.qsrs", "The QML precompile planner panicked; loading as usual"),
         }
     }
 }
@@ -129,6 +148,7 @@ fn spawn(files: &[PathBuf], n: usize, vfs_root: &Path, config: &Path) -> Option<
 impl Workers {
     fn wait(mut self) {
         let deadline = self.started + TIMEOUT;
+        let mut failed = 0;
         for child in &mut self.children {
             loop {
                 match child.try_wait() {
@@ -136,9 +156,14 @@ impl Workers {
                     Ok(None) => {
                         let _ = child.kill();
                         let _ = child.wait();
+                        failed += 1;
                         break;
                     }
-                    _ => break,
+                    Ok(Some(status)) => {
+                        failed += usize::from(!status.success());
+                        break;
+                    }
+                    Err(_) => break,
                 }
             }
         }
@@ -146,10 +171,11 @@ impl Workers {
         quickshell::qs_log!(
             info,
             "quickshell.qsrs",
-            "Compiled {} QML files ahead in {} workers, {} ms",
+            "Compiled {} QML files ahead in {} workers, {} ms{}",
             self.files,
             self.children.len(),
-            self.started.elapsed().as_millis()
+            self.started.elapsed().as_millis(),
+            if failed > 0 { format!(" ({failed} did not finish; the shell compiles what they left)") } else { String::new() }
         );
     }
 }
