@@ -9,7 +9,9 @@
 #include <QtQml/QQmlComponent>
 #include <QtQml/QQmlEngine>
 #include <QtWidgets/QApplication>
+#include <QtCore/QCryptographicHash>
 #include <QtCore/QFile>
+#include <QtCore/QFileInfo>
 #include <QtDBus/QDBusConnection>
 #include <QtDBus/QDBusMessage>
 #include <QtCore/QLibrary>
@@ -836,6 +838,25 @@ inline rust::String check_file(QQmlEngine& engine, const QString& path) {
 	QStringList out;
 	for (auto& e: component.errors()) out << e.toString();
 	return rust::String(out.join('\n').toStdString());
+}
+
+// Whether Qt's disk cache holds `source` compiled: 0 no entry, 1 an entry compiled from other contents, 2 current.
+// Qt 6.12 names the entry sha1(local path) + "." + the suffix after the name's first dot + "c", and takes it while the
+// md5 of the source equals the 16 bytes at offset 28 of its header (the time stamp there is -1). Reentrant.
+inline uint8_t qml_cache_state(rust::Str cacheDir, rust::Str source) {
+	const QString path = QString::fromUtf8(source.data(), qsizetype(source.size()));
+	const QString suffix = QFileInfo(path + QLatin1Char('c')).completeSuffix();
+	const QByteArray name = QCryptographicHash::hash(path.toUtf8(), QCryptographicHash::Sha1).toHex();
+	QFile entry(QString::fromUtf8(cacheDir.data(), qsizetype(cacheDir.size())) + QLatin1Char('/') + QString::fromLatin1(name)
+	            + QLatin1Char('.') + suffix);
+	if (!entry.open(QIODevice::ReadOnly)) return 0;
+	const QByteArray head = entry.read(44);
+	if (head.size() < 44 || !head.startsWith("qv4cdata")) return 0;
+	QFile file(path);
+	if (!file.open(QIODevice::ReadOnly)) return 0;
+	QCryptographicHash md5(QCryptographicHash::Md5);
+	md5.addData(&file);
+	return md5.result() == head.mid(28, 16) ? 2 : 1;
 }
 
 // Creates the root object from a local file; prints errors and returns null on failure.

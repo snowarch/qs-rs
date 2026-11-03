@@ -7,10 +7,13 @@
 //! Qt also never deletes an entry, and each path the shell was loaded from leaves ~900 behind
 //! (194 MB here, 856 in use): a while after start, entries this process maps get their mtime
 //! bumped, so mtime means "last used", and entries unused for a week go.
+//! Precompile workers (precompile.rs) write into the same cache: theirs skip the flush too, while the shell that
+//! started them holds the marker down and syncs once after the last one (`hold`, `release`).
 
 use std::ffi::c_int;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::Duration;
 
@@ -22,7 +25,8 @@ const PRUNE_AFTER: Duration = Duration::from_secs(120);
 const KEEP: Duration = Duration::from_secs(7 * 24 * 3600);
 
 static DIR: OnceLock<PathBuf> = OnceLock::new();
-static STATE: Mutex<State> = Mutex::new(State { dirty: false, generation: 0, syncer: false });
+static STATE: Mutex<State> = Mutex::new(State { dirty: false, generation: 0, syncer: false, holds: 0 });
+static WORKER: AtomicBool = AtomicBool::new(false);
 static WAKE: Condvar = Condvar::new();
 
 struct State {
@@ -31,6 +35,8 @@ struct State {
     /// Bumped by every skipped flush, so the syncer knows whether more came in while it slept.
     generation: u64,
     syncer: bool,
+    /// Workers writing into the cache right now: no sync, no marker removed, until they are done.
+    holds: u32,
 }
 
 /// Qt's default cache dir (QStandardPaths::CacheLocation + "/qmlcache", app name "quickshell",
@@ -62,6 +68,30 @@ pub fn init(dir: PathBuf) {
         std::thread::sleep(PRUNE_AFTER);
         prune(&dir, KEEP);
     });
+}
+
+/// A precompile worker: its flushes are skipped without a marker of its own (the shell that started it holds one),
+/// and it never drops or prunes the cache (a second worker dropping the cache over the first one's marker would undo
+/// them all).
+pub fn init_worker(dir: PathBuf) {
+    WORKER.store(true, Ordering::Relaxed);
+    let _ = DIR.set(dir);
+}
+
+/// Workers are about to write: the marker goes down now and stays until `release`.
+pub fn hold() {
+    let Some(dir) = DIR.get() else { return };
+    let mut st = STATE.lock().unwrap();
+    mark(dir, &mut st);
+    st.holds += 1;
+}
+
+/// The workers are done (or killed): their writes get the one sync like the shell's own.
+pub fn release() {
+    let Some(dir) = DIR.get() else { return };
+    let mut st = STATE.lock().unwrap();
+    st.holds = st.holds.saturating_sub(1);
+    wake(dir, &mut st);
 }
 
 fn prune(dir: &Path, keep: Duration) {
@@ -105,7 +135,15 @@ fn real_fdatasync(fd: c_int) -> c_int {
 
 /// Makes the marker durable before the first skipped flush returns, then hands the sync over.
 fn skip(dir: &'static Path) {
+    if WORKER.load(Ordering::Relaxed) {
+        return;
+    }
     let mut st = STATE.lock().unwrap();
+    mark(dir, &mut st);
+    wake(dir, &mut st);
+}
+
+fn mark(dir: &Path, st: &mut State) {
     if !st.dirty {
         let marker = dir.join(MARKER);
         if let Ok(f) = std::fs::File::create(&marker) {
@@ -117,6 +155,9 @@ fn skip(dir: &'static Path) {
         }
         st.dirty = true;
     }
+}
+
+fn wake(dir: &'static Path, st: &mut State) {
     st.generation += 1;
     if !st.syncer {
         st.syncer = true;
@@ -128,14 +169,14 @@ fn skip(dir: &'static Path) {
 fn syncer(dir: &'static Path) {
     let mut st = STATE.lock().unwrap();
     loop {
-        while !st.dirty {
+        while !st.dirty || st.holds > 0 {
             st = WAKE.wait(st).unwrap();
         }
         // Wait until the writes stop, then flush them all with one syncfs.
         let mut seen = st.generation;
         loop {
             st = WAKE.wait_timeout(st, SETTLE).unwrap().0;
-            if st.generation == seen {
+            if st.generation == seen && st.holds == 0 {
                 break;
             }
             seen = st.generation;
@@ -146,7 +187,7 @@ fn syncer(dir: &'static Path) {
             unsafe { libc::syncfs(d.as_raw_fd()) };
         }
         st = STATE.lock().unwrap();
-        if st.generation == seen {
+        if st.generation == seen && st.holds == 0 {
             let _ = std::fs::remove_file(dir.join(MARKER));
             st.dirty = false;
         }

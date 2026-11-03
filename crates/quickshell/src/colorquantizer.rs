@@ -35,8 +35,40 @@ pub mod qobject {
 use core::pin::Pin;
 use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::{QColor, QList, QRect, QString, QUrl};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+
+type DecodeKey = (String, u128, i32, i32, i32, i32, u64);
+/// Small decodes in flight or just done, shared: inir's palette and its backdrop ask for the same wallpaper at the
+/// same size at once, and a second ask waits for the first instead of decoding it again. Keyed by what changes the
+/// pixels (the file's mtime among them); the last few are kept.
+static DECODES: Mutex<Vec<(DecodeKey, Arc<OnceLock<Arc<Vec<u32>>>>)>> = Mutex::new(Vec::new());
+
+fn pixels(path: &str, (x, y, w, h): (i32, i32, i32, i32), rescale: f64) -> Arc<Vec<u32>> {
+    let load = || Arc::new(crate::util::load_pixels(&QString::from(path), x, y, w, h, rescale));
+    // Only shrunk reads are kept: a whole picture would hold tens of MB.
+    if !(rescale > 0.0 && rescale <= 256.0) {
+        return load();
+    }
+    let modified = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+    let stamp = modified.and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_nanos());
+    let key = (path.to_string(), stamp, x, y, w, h, rescale.to_bits());
+    let cell = {
+        let mut all = DECODES.lock().unwrap();
+        match all.iter().find(|(k, _)| *k == key) {
+            Some((_, cell)) => cell.clone(),
+            None => {
+                let cell = Arc::new(OnceLock::new());
+                all.push((key, cell.clone()));
+                if all.len() > 4 {
+                    all.remove(0);
+                }
+                cell
+            }
+        }
+    };
+    cell.get_or_init(load).clone()
+}
 
 #[derive(Default)]
 pub struct ColorQuantizerRust {
@@ -140,7 +172,7 @@ impl qobject::ColorQuantizer {
         let (depth, rescale) = (self.depth, self.rescale_size);
         let qt = self.qt_thread();
         std::thread::spawn(move || {
-            let pixels = crate::util::load_pixels(&QString::from(&path), x, y, w, h, rescale);
+            let pixels = pixels(&path, (x, y, w, h), rescale);
             if pixels.is_empty() {
                 crate::qs_log!(warn, "quickshell.colorquantizer", "Failed to load image from {path}");
             }

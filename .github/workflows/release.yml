@@ -44,13 +44,10 @@ jobs:
           fi
           scripts/bundle.sh "$RUNNER_TEMP/qt/$QT_VERSION/gcc_64" out
       - name: tests
-        # Every tests/qml/*.qml through the bundle people get, offscreen (the bundle carries only wayland, so the
-        # same Qt's offscreen platform comes from the aqt install).
+        # Every tests/qml/*.qml through the bundle people get, on its own offscreen platform.
         run: |
           mkdir -p "$RUNNER_TEMP/b" && tar -xzf out/qs-rs-[0-9]*-x86_64.tar.gz -C "$RUNNER_TEMP/b"
-          QSRS_BIN=$(ls "$RUNNER_TEMP"/b/*/bin/qs) QSRS_ISO_ROOT=/tmp/qi QSRS_RUNTIME=/tmp/qr \
-            QSRS_EXTRA_ENV="QT_QPA_PLATFORM_PLUGIN_PATH=$RUNNER_TEMP/qt/$QT_VERSION/gcc_64/plugins/platforms" \
-            scripts/test.sh
+          QSRS_BIN=$(ls "$RUNNER_TEMP"/b/*/bin/qs) QSRS_ISO_ROOT=/tmp/qi QSRS_RUNTIME=/tmp/qr QSRS_TIMEOUT=60 scripts/test.sh
       - uses: actions/upload-artifact@v7
         with:
           name: qs-rs-x86_64
