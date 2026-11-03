@@ -73,8 +73,8 @@ for dir in platforms wayland-shell-integration wayland-graphics-integration-clie
         [ -d "$from" ] && mkdir -p "$DEST/plugins/$dir" && cp -a "$from/." "$DEST/plugins/$dir/"
     done
 done
-# wayland as a client, plus offscreen for what runs without a screen (`check`, the precompile workers a cold start
-# runs); the other platforms, shells and the compositor-side buffer plugins never load
+# wayland as a client, plus offscreen for what runs without a screen (`check`, the tests on CI); the other platforms,
+# shells and the compositor-side buffer plugins never load
 rm -f "$DEST"/plugins/platforms/libq{minimal,vnc,linuxfb,eglfs,xcb,vkkhrdisplay}*.so \
     "$DEST"/plugins/wayland-shell-integration/lib{fullscreen-shell-v1,ivi-shell,qt-shell,wl-shell-plugin}.so \
     "$DEST"/plugins/wayland-graphics-integration-client/*-server.so

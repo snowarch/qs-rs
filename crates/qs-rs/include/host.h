@@ -9,9 +9,7 @@
 #include <QtQml/QQmlComponent>
 #include <QtQml/QQmlEngine>
 #include <QtWidgets/QApplication>
-#include <QtCore/QCryptographicHash>
 #include <QtCore/QFile>
-#include <QtCore/QFileInfo>
 #include <QtDBus/QDBusConnection>
 #include <QtDBus/QDBusMessage>
 #include <QtCore/QLibrary>
@@ -838,20 +836,6 @@ inline rust::String check_file(QQmlEngine& engine, const QString& path) {
 	QStringList out;
 	for (auto& e: component.errors()) out << e.toString();
 	return rust::String(out.join('\n').toStdString());
-}
-
-// Pure hashes for the precompile planner (precompile.rs), which runs before QApplication on a thread of its own and
-// so must create no QObject (the first thread to make one becomes Qt's main thread).
-inline rust::String sha1_hex(rust::Str text) {
-	const auto sum = QCryptographicHash::hash(QByteArrayView(text.data(), qsizetype(text.size())), QCryptographicHash::Sha1);
-	return rust::String(sum.toHex().toStdString());
-}
-inline rust::Vec<uint8_t> md5_of(rust::Slice<const uint8_t> data) {
-	const auto sum = QCryptographicHash::hash(
-	        QByteArrayView(reinterpret_cast<const char*>(data.data()), qsizetype(data.size())), QCryptographicHash::Md5);
-	rust::Vec<uint8_t> out;
-	for (char c: sum) out.push_back(uint8_t(c));
-	return out;
 }
 
 // Creates the root object from a local file; prints errors and returns null on failure.

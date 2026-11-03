@@ -20,7 +20,6 @@ mod command;
 mod errors;
 mod host;
 mod launch;
-mod precompile;
 mod scan;
 mod watchfiles;
 
@@ -364,13 +363,11 @@ fn run_shell(cli: &cli::Cli, config: PathBuf, started: std::time::Instant) -> i3
     let shell_id = shell_id_for(&config, &pragmas);
     // `check`: compile every QML file the shell reaches, report errors, start nothing.
     let check = cli.cmd == cli::Command::Check;
-    // A precompile worker (precompile.rs) is a check through the shell's own VFS, writing Qt's cache.
-    let worker_vfs = std::env::var_os("QSRS_PRECOMPILE_VFS").filter(|_| check).map(PathBuf::from);
     if check && std::env::var_os("QT_QPA_PLATFORM").is_none() {
         unsafe { std::env::set_var("QT_QPA_PLATFORM", "offscreen") };
     }
     // A check compiles from a private VFS path, so its cache entries could never be hit again.
-    if check && worker_vfs.is_none() {
+    if check {
         unsafe { std::env::set_var("QML_DISABLE_DISK_CACHE", "1") };
     }
     let mut run_dir = None;
@@ -413,11 +410,7 @@ fn run_shell(cli: &cli::Cli, config: PathBuf, started: std::time::Instant) -> i3
     }
     launch::apply_env(&pragmas);
     if let Some(dir) = cachesync::qt_cache_dir() {
-        if worker_vfs.is_some() {
-            cachesync::init_worker(dir);
-        } else {
-            cachesync::init(dir);
-        }
+        cachesync::init(dir);
     }
     if let Some(dir) = run_dir {
         launch::drop_expensive_fonts(&pragmas, dir);
@@ -425,27 +418,19 @@ fn run_shell(cli: &cli::Cli, config: PathBuf, started: std::time::Instant) -> i3
 
     // The VFS lives at a stable path like upstream's, so Qt's QML disk cache (keyed by file
     // path) hits across starts. A second instance of the shell gets a private one.
-    let (vfs_root, _vfs_lock) = if let Some(root) = &worker_vfs {
-        (root.clone(), None)
-    } else {
-        clean_stale_vfs();
-        match quickshell::instance::lock_vfs(&quickshell::common::shell().shell_id) {
-            Ok((dir, lock)) if !check => (dir, Some(lock)),
-            _ if check => (runtime_dir().join(format!("vfs-{}", std::process::id())), None),
-            _ => {
-                eprintln!("The VFS of this shell is used by another instance; using a private one.");
-                (runtime_dir().join(format!("vfs-{}", std::process::id())), None)
-            }
+    clean_stale_vfs();
+    let (vfs_root, _vfs_lock) = match quickshell::instance::lock_vfs(&quickshell::common::shell().shell_id) {
+        Ok((dir, lock)) if !check => (dir, Some(lock)),
+        _ if check => (runtime_dir().join(format!("vfs-{}", std::process::id())), None),
+        _ => {
+            eprintln!("The VFS of this shell is used by another instance; using a private one.");
+            (runtime_dir().join(format!("vfs-{}", std::process::id())), None)
         }
     };
     let scan = scan::Scan::new(&root_file).expect("scan failed");
     let vfs = vfs_root.join("qs");
-    if worker_vfs.is_none() {
-        scan.write_vfs(&vfs).expect("vfs write failed");
-    }
+    scan.write_vfs(&vfs).expect("vfs write failed");
     let entry = vfs.join(root_file.strip_prefix(&scan.root).unwrap());
-    // Workers compile what the cache lacks while Qt starts here; the root waits for them below.
-    let precompile = if check { None } else { precompile::start(&scan, &vfs_root, &config) };
 
     heap_dumps();
     if let Some(dir) = curated_plugins() {
@@ -478,16 +463,9 @@ fn run_shell(cli: &cli::Cli, config: PathBuf, started: std::time::Instant) -> i3
             }
     let engine = host::ffi::new_engine(&qstr(&vfs_root));
     if check {
-        let engine = unsafe { std::pin::Pin::new_unchecked(&mut *engine) };
-        if worker_vfs.is_some() {
-            return precompile::work(&vfs, engine);
-        }
-        let code = check_shell(&scan, &vfs, engine);
+        let code = check_shell(&scan, &vfs, unsafe { std::pin::Pin::new_unchecked(&mut *engine) });
         let _ = std::fs::remove_dir_all(&vfs_root);
         return code;
-    }
-    if let Some(pending) = precompile {
-        pending.wait();
     }
     quickshell::common::set_reload_hook(host::ffi::request_reload);
     let root = unsafe { host::ffi::create_root(std::pin::Pin::new_unchecked(&mut *engine), &qstr(&entry)) };
