@@ -1,10 +1,18 @@
 name: release
 
-# The bundle people's machines run: qs-rs with its own Qt (scripts/bundle.sh). PRs build it too.
+# The bundle people's machines run: qs-rs with its own Qt (scripts/bundle.sh). Every push builds it: a tag publishes
+# the release, any branch keeps it as an artifact that `bin/ci-take qs-rs` (inir-eco) puts live, so nothing is compiled
+# on the maintainer's machine. PRs build it too.
 on:
   push:
+    branches: ["**"]
     tags: ["v*"]
   pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 permissions:
   contents: write
@@ -35,6 +43,13 @@ jobs:
             echo "tag $GITHUB_REF_NAME but Cargo.toml says $ver"; exit 1
           fi
           scripts/bundle.sh "$RUNNER_TEMP/qt/$QT_VERSION/gcc_64" out
+      - uses: actions/upload-artifact@v7
+        with:
+          name: qs-rs-x86_64
+          retention-days: 30
+          path: |
+            out/*.tar.gz
+            out/*.sha256
       - if: startsWith(github.ref, 'refs/tags/')
         run: |
           gh release create "$GITHUB_REF_NAME" out/*.tar.gz out/*.sha256 --title "$GITHUB_REF_NAME" \
