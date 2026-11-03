@@ -23,17 +23,17 @@ Quickshell on a machine where qs-rs doesn't start.
 
 ## Numbers
 
-iNiR on both runtimes, same config, each in its own headless KWin (2026-10-27, 3 runs each):
+iNiR on both runtimes, same config, each in its own headless KWin (2026-11-03, 3 runs each):
 
 | | Quickshell 0.3.2 | qs-rs | |
 |---|---:|---:|---:|
-| first frame | 2.6 s | **0.87 s** | ~3x faster |
-| first frame, empty QML cache | 2.6 s | 2.5 s | same |
-| CPU in the first 30 s | 7.9 s | **5.3 s** | -33% |
-| threads | 90 | **45** | -50% |
-| RSS | 632 MB | **558 MB** | -12% |
-| PSS | 494 MB | **436 MB** | -12% |
-| VRAM | 219 MiB | **199 MiB** | -9% |
+| first frame | 2.3 s | **0.74 s** | ~3x faster |
+| first frame, empty QML cache | 2.8 s | **2.5 s** | -10% |
+| CPU in the first 30 s | 5.5 s | **3.3 s** | -40% |
+| threads | 86 | **44** | -49% |
+| RSS | 560 MB | **474 MB** | -15% |
+| PSS | 443 MB | **413 MB** | -7% |
+| VRAM | 246 MiB | **220 MiB** | -11% |
 
 Quickshell keeps no QML cache for a shell, so every start is its cold start. Ryzen 7 5700G (Vega), Linux 7.3,
 Qt 6.12, Mesa 26.2.
