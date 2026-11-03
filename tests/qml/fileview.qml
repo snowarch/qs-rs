@@ -60,7 +60,7 @@ ShellRoot {
 
     Process {
         id: touch
-        command: ["sh", "-c", "mkdir -p '" + root.dir + "' && printf 'x' > '" + root.dir + "/watched.txt' && printf '{\"name\":\"fromdisk\",\"nested\":{\"flag\":true}}' > '" + root.dir + "/preset.json'"]
+        command: ["sh", "-c", "mkdir -p '" + root.dir + "' && printf 'x' > '" + root.dir + "/watched.txt' && printf '{\"name\":\"fromdisk\",\"nested\":{\"flag\":true},\"curve\":[0.16,1,0.3,1],\"counts\":[3,4]}' > '" + root.dir + "/preset.json'"]
         running: true
     }
 
@@ -72,6 +72,8 @@ ShellRoot {
             id: presetAdapter
             property string name: "unset"
             property JsonObject nested: JsonObject { property bool flag: false }
+            property list<real> curve: [9]
+            property list<int> counts: []
         }
     }
 
@@ -93,6 +95,8 @@ ShellRoot {
                 const saved = JSON.parse(config.text())
                 root.check("adapter.write", saved.name === "changed" && saved.count === 1 && saved.nested.flag === false && saved.list.length === 2)
                 root.check("adapter.read", presetAdapter.name === "fromdisk" && presetAdapter.nested.flag === true)
+                root.check("adapter.typedLists", presetAdapter.curve.length === 4 && presetAdapter.curve[0] === 0.16
+                    && presetAdapter.curve[3] === 1 && presetAdapter.counts.length === 2 && presetAdapter.counts[1] === 4)
                 const p = Qt.createQmlObject('import Quickshell.Io; Process { command: ["sh", "-c", "printf y >> \'' + root.dir + '/watched.txt\'"]; running: true }', root)
                 break
             case 2:
