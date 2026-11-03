@@ -3,8 +3,11 @@
 # A test passes when it calls Qt.exit(0) within the timeout.
 set -u
 cd "$(dirname "$0")/.."
-cargo build -q || exit 1
-BIN=$(cargo metadata -q --format-version 1 | sed 's/.*"target_directory":"\([^"]*\)".*/\1/')/debug/qs-rs
+# QSRS_BIN: a binary already built (CI's bundle, bin/qs); otherwise a debug build here.
+if [ -n "${QSRS_BIN:-}" ]; then BIN=$QSRS_BIN; else
+  cargo build -q || exit 1
+  BIN=$(cargo metadata -q --format-version 1 | sed 's/.*"target_directory":"\([^"]*\)".*/\1/')/debug/qs-rs
+fi
 export QSRS_ISO_ROOT=${QSRS_ISO_ROOT:-${XDG_CACHE_HOME:-$HOME/.cache}/qs-rs/iso-test}
 export QSRS_RUNTIME=${QSRS_RUNTIME:-${TMPDIR:-/tmp}/qsrs-run}
 fail=0
