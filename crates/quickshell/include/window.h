@@ -694,10 +694,16 @@ public:
 		return win ? win->property("_qsWindow").value<QObject*>() : nullptr;
 	}
 
+	// Upstream's: the Quickshell window's content item (ProxyWindowBase.contentItem), the item a shell may transform,
+	// not the Qt root above it. Geometry mapped to the root came out scaled twice under a transformed content item.
 	[[nodiscard]] QQuickItem* contentItem() const {
 		auto* item = qobject_cast<QQuickItem*>(this->parent());
 		auto* win = item ? item->window() : nullptr;
-		return win ? win->contentItem() : nullptr;
+		if (!win) return nullptr;
+		if (auto* window = this->window()) {
+			if (auto* content = window->property("contentItem").value<QQuickItem*>()) return content;
+		}
+		return win->contentItem();
 	}
 
 	// Upstream's mapping helpers: coordinates in the Quickshell window's content item.
