@@ -39,6 +39,9 @@ public:
 		}
 		auto icon = QIcon::fromTheme(iconName);
 		if (icon.isNull() && !fallbackName.isEmpty()) icon = QIcon::fromTheme(fallbackName);
+		// Themes that draw only symbolic generics (WhiteSur has application-x-executable-symbolic alone) would
+		// otherwise give the missing-icon checker for every app without an icon of its own.
+		if (icon.isNull() && !fallbackName.isEmpty()) icon = QIcon::fromTheme(fallbackName + QStringLiteral("-symbolic"));
 		if (icon.isNull() && !path.isEmpty()) icon = QIcon(QPixmap(path));
 		auto target = requestedSize.isValid() ? requestedSize : QSize(100, 100);
 		if (target.width() == 0 || target.height() == 0) target = QSize(2, 2);
