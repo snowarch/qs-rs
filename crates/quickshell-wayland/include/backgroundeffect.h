@@ -185,6 +185,9 @@ private:
 
 	// Also called when the effect object comes back to this one (qsbe::release).
 	Q_INVOKABLE void updateBlurRegion() {
+		if (this->surface == nullptr && this->wlSurface == nullptr && this->waylandWindow != nullptr
+		    && this->waylandWindow->wlSurface() != nullptr && qsbe::manager() == nullptr)
+			this->warnUnsupported();
 		if (this->surface == nullptr || this->window == nullptr || !qsbe::holds(this->wlSurface, this)) return;
 		this->pending = true;
 		this->window->update();
@@ -237,14 +240,19 @@ private:
 		if (ww->wlSurface() != nullptr) this->onSurfaceCreated();
 	}
 
+	// Once per process, and only when a region is actually asked for: a window that merely carries
+	// the attached object (its binding gave null) asks the compositor for nothing.
+	void warnUnsupported() {
+		static bool warned = false;
+		if (warned || this->mBlurRegion == nullptr) return;
+		warned = true;
+		qWarning() << "Cannot enable background effect as ext-background-effect-v1 is not supported by the current compositor.";
+	}
+
 	void onSurfaceCreated() {
 		auto* manager = qsbe::manager();
 		if (manager == nullptr) {
-			static bool warned = false;
-			if (!warned) {
-				warned = true;
-				qWarning() << "Cannot enable background effect as ext-background-effect-v1 is not supported by the current compositor.";
-			}
+			this->warnUnsupported();
 			return;
 		}
 		auto* wl = this->waylandWindow->wlSurface();
