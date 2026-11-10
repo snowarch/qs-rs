@@ -138,12 +138,21 @@ const PROFILES: [(&str, &str); 2] = [
 pub struct PowerProfilesCoreRust {
     /// (service, path) once connected.
     target: Arc<Mutex<Option<(&'static str, &'static str)>>>,
+    /// A profile asked for before the daemon answered: set as soon as it does (a shell restoring its profile at start
+    /// asks within the first milliseconds).
+    pending: Arc<Mutex<Option<String>>>,
+}
+
+async fn set_profile(conn: &zbus::Connection, service: &'static str, path: &'static str, profile: &str) -> zbus::Result<()> {
+    let p = Proxy::new(conn, service, path, PROPS_IFACE).await?;
+    p.call::<_, _, ()>("Set", &(service, "ActiveProfile", Value::from(profile))).await
 }
 
 impl cxx_qt::Initialize for qobject::PowerProfilesCore {
     fn initialize(self: Pin<&mut Self>) {
         let qt = self.qt_thread();
         let target = self.target.clone();
+        let pending = self.pending.clone();
         qs_dbus::rt::spawn(async move {
             let emit = |json: String| {
                 let _ = qt.queue(move |this| this.properties_changed(QString::from(&json)));
@@ -157,6 +166,12 @@ impl cxx_qt::Initialize for qobject::PowerProfilesCore {
                         Ok(props) => {
                             *target.lock().unwrap() = Some((service, path));
                             emit(json_of(&props));
+                            let asked = pending.lock().unwrap().take();
+                            if let Some(profile) = asked {
+                                if let Err(e) = set_profile(&conn, service, path, &profile).await {
+                                    quickshell::qs_log!(warn, "quickshell.service.powerprofiles", "could not set the profile to {profile}: {e}");
+                                }
+                            }
                             while let Some(msg) = next(&mut stream).await {
                                 let msg = msg?;
                                 if msg.header().member().map(|m| m.as_str()) != Some("PropertiesChanged") {
@@ -187,16 +202,18 @@ impl cxx_qt::Initialize for qobject::PowerProfilesCore {
 
 impl qobject::PowerProfilesCore {
     fn set_active_profile(&self, profile: &QString) {
-        let Some((service, path)) = *self.target.lock().unwrap() else {
-            quickshell::qs_log!(warn, "quickshell.service.powerprofiles", "cannot set the profile, the daemon is not available");
+        let profile = profile.to_string();
+        // Held under the target's lock, so the connecting task either sees it pending or this call sees the target.
+        let target = self.target.lock().unwrap();
+        let Some((service, path)) = *target else {
+            *self.pending.lock().unwrap() = Some(profile);
             return;
         };
-        let profile = profile.to_string();
+        drop(target);
         qs_dbus::rt::spawn(async move {
             let res = async {
                 let conn = Bus::System.connect().await?;
-                let p = Proxy::new(&conn, service, path, PROPS_IFACE).await?;
-                p.call::<_, _, ()>("Set", &(service, "ActiveProfile", Value::from(profile.as_str()))).await
+                set_profile(&conn, service, path, &profile).await
             };
             if let Err(e) = res.await {
                 quickshell::qs_log!(warn, "quickshell.service.powerprofiles", "could not set the profile to {profile}: {e}");
