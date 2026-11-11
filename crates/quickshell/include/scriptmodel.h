@@ -182,22 +182,26 @@ private:
 					this->endInsertRows();
 				}
 				anyChanges = true;
-			} else if (!newIter->strictlyEquals(*iter)) {
-				// equal by key or structure but a different value: update in place
-				auto first = pos(iter);
-				auto index = first;
-				do {
-					this->mValues.replace(index, *newIter);
-					++iter;
-					++newIter;
-					++index;
-				} while (iter != this->mValues.end() && newIter != newValues.end() && !newIter->strictlyEquals(*iter));
-				emit this->dataChanged(this->index(first, 0), this->index(index - 1, 0), {Qt::UserRole});
-				anyChanges = true;
 			} else {
 				++iter;
 				++newIter;
 			}
+		}
+
+		// Rows are in place now; the ones equal by key or structure but another value update where they are. After
+		// the diff, never inside it: a row the diff moved or skipped kept its old value (upstream d7ee6d1).
+		for (int i = 0; i != this->mValues.length();) {
+			if (this->mValues.at(i).strictlyEquals(newValues.at(i))) {
+				++i;
+				continue;
+			}
+			auto first = i;
+			do {
+				this->mValues.replace(i, newValues.at(i));
+				++i;
+			} while (i != this->mValues.length() && !this->mValues.at(i).strictlyEquals(newValues.at(i)));
+			emit this->dataChanged(this->index(first, 0), this->index(i - 1, 0), {Qt::UserRole});
+			anyChanges = true;
 		}
 
 		this->isModifying = false;

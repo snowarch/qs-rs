@@ -45,10 +45,11 @@ ShellRoot {
         model.objectProp = "id"
         step("keyed update", [{ id: 1, v: "a" }, { id: 2, v: "b" }], 2, "ins 0-1|rm 2-3", '{"id":1,"v":"a"},{"id":2,"v":"b"}')
         step("keyed change", [{ id: 1, v: "a2" }, { id: 2, v: "b" }], 0, "dt 0-1", '{"id":1,"v":"a2"},{"id":2,"v":"b"}')
+        step("keyed move and change", [{ id: 2, v: "b2" }, { id: 1, v: "a2" }], 0, "mv 1-1>0|dt 0-1", '{"id":2,"v":"b2"},{"id":1,"v":"a2"}')
         model.objectProp = ""
         model.comparisonMode = ObjectComparison.Identity
-        step("identity", [{ id: 1, v: "a2" }], 1, "ins 0-0|rm 1-2", '{"id":1,"v":"a2"}')
-        check("values read back", model.values.length === 1 && model.values[0].v === "a2")
+        step("identity", [{ id: 1, v: "a3" }], 1, "ins 0-0|rm 1-2", '{"id":1,"v":"a3"}')
+        check("values read back", model.values.length === 1 && model.values[0].v === "a3")
         if (errors.length) console.log("FAILED: " + errors.join(", "))
         Qt.exit(errors.length ? 1 : 0)
     }

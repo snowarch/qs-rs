@@ -11,6 +11,9 @@ pub mod qobject {
     unsafe extern "C++" {
         include!("cxx-qt-lib/qstring.h");
         type QString = cxx_qt_lib::QString;
+        include!("quickshell_services_systemtray/include/activation.h");
+        #[namespace = "qsrs_tray"]
+        fn request_activation_token(core: &SystemTrayCore, key: &QString) -> bool;
     }
 
     extern "RustQt" {
@@ -21,6 +24,10 @@ pub mod qobject {
 
         #[qinvokable]
         fn activate(self: &SystemTrayCore, key: &QString);
+        /// Activate, handing the item the click's xdg-activation token first (empty: none).
+        #[qinvokable]
+        #[cxx_name = "activateWithToken"]
+        fn activate_with_token(self: &SystemTrayCore, key: &QString, token: &QString);
         #[qinvokable]
         #[cxx_name = "secondaryActivate"]
         fn secondary_activate(self: &SystemTrayCore, key: &QString);
@@ -557,7 +564,22 @@ impl qobject::SystemTrayCore {
     }
 
     fn activate(&self, key: &QString) {
-        self.call(key, "Activate", (0i32, 0i32));
+        if !qobject::request_activation_token(self, key) {
+            self.activate_with_token(key, &QString::default());
+        }
+    }
+
+    fn activate_with_token(&self, key: &QString, token: &QString) {
+        let (service, path) = split_key(&key.to_string());
+        let token = token.to_string();
+        self.worker.run(format!("SystemTray: Activate on {service}"), move |conn| async move {
+            let item = Proxy::new(&conn, service, path, ITEM).await?;
+            if !token.is_empty() {
+                // Most items have no such method: its error is not the click's.
+                let _ = item.call::<_, _, ()>("ProvideXdgActivationToken", &(token,)).await;
+            }
+            item.call::<_, _, ()>("Activate", &(0i32, 0i32)).await
+        });
     }
 
     fn secondary_activate(&self, key: &QString) {

@@ -24,7 +24,7 @@ pub mod ffi {
         fn setup_icons(theme: &QString);
         fn setup_desktop_icons(theme: &QString);
         fn init_webengine() -> bool;
-        fn create_app(use_qapplication: bool, desktop_settings_aware: bool) -> UniquePtr<QGuiApplication>;
+        fn create_app(app_id: &QString, use_qapplication: bool, desktop_settings_aware: bool) -> UniquePtr<QGuiApplication>;
         fn configure_app(app_id: &QString, native_text_rendering: bool);
         fn frames_command(action: &str, arg: &str) -> String;
         fn exec_app(app: Pin<&mut QGuiApplication>) -> i32;

@@ -171,7 +171,8 @@ pub fn parse_text(id: &str, text: &str) -> DesktopEntryData {
         entries.clear();
     };
 
-    for line in text.split('\n').filter(|l| !l.is_empty()) {
+    // Trimmed: a CRLF file or a space after `[Desktop Entry]` lost the group, so the whole entry (upstream 30a5d60).
+    for line in text.split('\n').map(str::trim).filter(|l| !l.is_empty()) {
         if line.starts_with('#') {
             continue;
         }
@@ -352,6 +353,8 @@ mod tests {
         assert_eq!(d.categories, ["GNOME", "Utility"]);
         assert_eq!(d.actions.len(), 1);
         assert_eq!(d.actions[0].name, "New Window");
+        let crlf = parse_text("x", "[Desktop Entry] \r\nType=Application\r\nName=Win\r\n  Exec=true\r\n");
+        assert_eq!((crlf.name.as_str(), crlf.command.len()), ("Win", 1));
         let link = parse_text("x", "[Desktop Entry]\nType=Link\nName=X\n");
         assert!(link.name.is_empty());
     }

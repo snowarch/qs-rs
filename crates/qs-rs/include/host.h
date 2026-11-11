@@ -282,11 +282,14 @@ inline bool init_webengine() {
 	return true;
 }
 
-inline std::unique_ptr<QGuiApplication> create_app(bool useQApplication, bool desktopSettingsAware) {
+inline std::unique_ptr<QGuiApplication> create_app(const QString& appId, bool useQApplication, bool desktopSettingsAware) {
 	static int argc = 1;
 	static char arg0[] = "quickshell";
 	static char* argv[] = {arg0, nullptr};
 	QGuiApplication::setDesktopSettingsAware(desktopSettingsAware);
+	// Before the application: the platform reads it while starting, and set after, its first connection went
+	// out under the binary's name (upstream 9b0f339).
+	QGuiApplication::setDesktopFileName(appId);
 	// Qt's services ask the portal for a version before registering the app id, and xdg-desktop-portal 1.20+
 	// refuses a registration after any other call: a WARN at every start. Qt skips both while the platform starts
 	// and configure_app registers first; openUrl still goes through the portal and falls back without one.
@@ -299,10 +302,9 @@ inline std::unique_ptr<QGuiApplication> create_app(bool useQApplication, bool de
 	return app;
 }
 
-// Upstream launch.cpp after the application exists: the app id surfaces carry, transparent
+// Upstream launch.cpp after the application exists: the portal registration, transparent
 // windows, NativeTextRendering, and hidden windows never quit the shell.
 inline void configure_app(const QString& appId, bool nativeTextRendering) {
-	QGuiApplication::setDesktopFileName(appId);
 	// The first portal call on this connection (see create_app); best effort, like Qt's.
 	if (qEnvironmentVariableIntValue("QT_NO_XDG_DESKTOP_PORTAL") <= 0) {
 		auto msg = QDBusMessage::createMethodCall(
