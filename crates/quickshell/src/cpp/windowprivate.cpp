@@ -7,6 +7,8 @@
 #include <QtQuick/private/qquicktext_p.h>
 #include <QtQml/private/qqmldata_p.h>
 #include <QtQml/private/qqmlcontextdata_p.h>
+#include <QtQml/private/qqmlbinding_p.h>
+#include <QtQml/private/qqmlproperty_p.h>
 #include <QtQuick/private/qsgadaptationlayer_p.h>
 #include <QtQuick/private/qsgcontext_p.h>
 #include <QtQuick/QSGRendererInterface>
@@ -120,6 +122,14 @@ void frameclock::quiet_short_texts(QWindow* window) {
 		if (auto* text = qobject_cast<QQuickText*>(item); text && text->text().size() <= 10000)
 			text->setFlag(QQuickItem::ItemObservesViewport, false);
 	}
+}
+
+bool screenChosen(QObject* proxy) {
+	if (!proxy) return false;
+	auto* binding = QQmlPropertyPrivate::binding(QQmlProperty(proxy, QStringLiteral("screen")));
+	if (!binding) return proxy->property("screen").value<QObject*>() != nullptr;
+	if (binding->kind() != QQmlAbstractBinding::QmlBinding) return true;
+	return !static_cast<QQmlBinding*>(binding)->sourceLocation().sourceFile.endsWith(QLatin1String("/ProxyWindowBase.qml"));
 }
 
 } // namespace qsrs
