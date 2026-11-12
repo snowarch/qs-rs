@@ -60,7 +60,7 @@ ProxyWindowBase {
     property bool _configured: false
     _ready: _configured
     on_WindowChanged: if (_window) { _configure(); _configured = true }
-    on_AboutToShow: QsLayerShell.setOutput(_window)
+    on_AboutToShow: QsLayerShell.setOutput(_window, QsWindowSupport.screenChosen(root))
     // A reused surface keeps its layer and namespace: only a window with the same ones is taken.
     _reuseTag: "panel:" + _layer + ":" + _namespace
 
@@ -72,5 +72,6 @@ ProxyWindowBase {
     }
     on_LayerChanged: if (_window) _recreate()
     on_NamespaceChanged: if (_window) _recreate()
-    onScreenChanged: if (_window) _recreate()
+    // One the compositor placed follows its output on its own: no recreate.
+    onScreenChanged: if (_window && QsWindowSupport.screenChosen(root)) _recreate()
 }

@@ -20,6 +20,8 @@
 #include <QtGui/QOffscreenSurface>
 #include <QtGui/rhi/qrhi.h>
 #include <QtQuick/QQuickGraphicsDevice>
+#include <QtQml/private/qqmlbinding_p.h>
+#include <QtQml/private/qqmlproperty_p.h>
 
 // One QRhi (one GL context) for every window instead of one per window: each Mesa context costs
 // heap, VRAM and driver threads. The host runs the basic render loop for it (a QRhi is used from one
@@ -390,6 +392,17 @@ public:
 	Q_INVOKABLE QString windowScreenName(QWindow* window) {
 		auto* screen = window ? window->screen() : nullptr;
 		return screen ? screen->name() : QString();
+	}
+
+	// Whether the shell gave the proxy a screen. Upstream lets the compositor place a layer surface
+	// whose screen was never set (WlrLayershell::compositorPicksScreen: Niri puts it on the focused
+	// output); here `screen` then still runs ProxyWindowBase's own fallback binding.
+	Q_INVOKABLE bool screenChosen(QObject* proxy) {
+		if (!proxy) return false;
+		auto* binding = QQmlPropertyPrivate::binding(QQmlProperty(proxy, QStringLiteral("screen")));
+		if (!binding) return proxy->property("screen").value<QObject*>() != nullptr;
+		if (binding->kind() != QQmlAbstractBinding::QmlBinding) return true;
+		return !static_cast<QQmlBinding*>(binding)->sourceLocation().sourceFile.endsWith(QLatin1String("/ProxyWindowBase.qml"));
 	}
 
 	Q_INVOKABLE void registerProxy(QQuickWindow* window, QObject* proxy) {

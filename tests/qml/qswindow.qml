@@ -84,6 +84,11 @@ ShellRoot {
             root.check("lazy panel screen binding", lazy.item?.probe.scr === s0)
             root.check("unset screen reads its screen", noScreen.screen === s0)
             root.check("unset screen binding", probeC.scr === s0)
+            // A panel with no screen goes where the compositor puts it (upstream compositorPicksScreen).
+            root.check("set screen is chosen", QsWindowSupport.screenChosen(panel))
+            root.check("unset screen is not chosen", !QsWindowSupport.screenChosen(noScreen))
+            noScreen.screen = s0
+            root.check("assigned screen is chosen", QsWindowSupport.screenChosen(noScreen))
             root.finish()
         }
     }
