@@ -268,12 +268,17 @@ impl qobject::DBusMenuClient {
                 zbus::fdo::DBusProxy::new(&conn).await?.get_name_owner(service.as_str().try_into()?).await?.to_string()
             };
             shared().unwrap().routes.lock().unwrap().insert(key, Route { sender, path: path.clone(), qt: routes_qt });
-            let props = zbus::fdo::PropertiesProxy::builder(&conn).destination(service.as_str())?.path(path.as_str())?.build().await?;
-            if let Ok(v) = props.get(IFACE.try_into()?, "IconThemePath").await {
-                let dirs: Vec<String> = Vec::<String>::try_from(v).unwrap_or_default();
-                let joined = dirs.join(":");
-                let _ = qt.queue(move |obj| obj.icon_theme_path(QString::from(&joined)));
-            }
+            // Off the shared worker: IconThemePath is optional and an app may never answer it (no timeout on a
+            // call), which would hold back the layout of every menu queued behind this one.
+            qs_dbus::rt::spawn(async move {
+                let Ok(props) = async { zbus::fdo::PropertiesProxy::builder(&conn).destination(service.as_str())?.path(path.as_str())?.build().await }.await else { return };
+                let Ok(iface) = IFACE.try_into() else { return };
+                if let Ok(v) = props.get(iface, "IconThemePath").await {
+                    let dirs: Vec<String> = Vec::<String>::try_from(v).unwrap_or_default();
+                    let joined = dirs.join(":");
+                    let _ = qt.queue(move |obj| obj.icon_theme_path(QString::from(&joined)));
+                }
+            });
             Ok(())
         });
     }
