@@ -1036,7 +1036,7 @@ dependencies = [
 
 [[package]]
 name = "qs-rs"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "cxx",
  "cxx-qt",
@@ -1063,7 +1063,7 @@ dependencies = [
 
 [[package]]
 name = "qs_dbus"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "quickshell",
  "zbus",
@@ -1071,7 +1071,7 @@ dependencies = [
 
 [[package]]
 name = "qs_wayland"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "cxx",
  "cxx-qt",
@@ -1109,7 +1109,7 @@ dependencies = [
 
 [[package]]
 name = "quickshell"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "cxx",
  "cxx-qt",
@@ -1120,7 +1120,7 @@ dependencies = [
 
 [[package]]
 name = "quickshell_bluetooth"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "cxx",
  "cxx-qt",
@@ -1132,7 +1132,7 @@ dependencies = [
 
 [[package]]
 name = "quickshell_dbusmenu"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "cxx",
  "cxx-qt",
@@ -1145,7 +1145,7 @@ dependencies = [
 
 [[package]]
 name = "quickshell_hyprland"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "cxx",
  "cxx-qt",
@@ -1156,7 +1156,7 @@ dependencies = [
 
 [[package]]
 name = "quickshell_io"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "cxx",
  "cxx-qt",
@@ -1169,7 +1169,7 @@ dependencies = [
 
 [[package]]
 name = "quickshell_networking"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "cxx",
  "cxx-qt",
@@ -1183,7 +1183,7 @@ dependencies = [
 
 [[package]]
 name = "quickshell_services_mpris"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "cxx",
  "cxx-qt",
@@ -1195,7 +1195,7 @@ dependencies = [
 
 [[package]]
 name = "quickshell_services_notifications"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "cxx",
  "cxx-qt",
@@ -1208,7 +1208,7 @@ dependencies = [
 
 [[package]]
 name = "quickshell_services_pam"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "cxx",
  "cxx-qt",
@@ -1219,7 +1219,7 @@ dependencies = [
 
 [[package]]
 name = "quickshell_services_pipewire"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "cxx",
  "cxx-qt",
@@ -1231,7 +1231,7 @@ dependencies = [
 
 [[package]]
 name = "quickshell_services_polkit"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "cxx",
  "cxx-qt",
@@ -1245,7 +1245,7 @@ dependencies = [
 
 [[package]]
 name = "quickshell_services_systemtray"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "cxx",
  "cxx-qt",
@@ -1258,7 +1258,7 @@ dependencies = [
 
 [[package]]
 name = "quickshell_services_upower"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "cxx",
  "cxx-qt",
@@ -1270,7 +1270,7 @@ dependencies = [
 
 [[package]]
 name = "quickshell_wayland"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "cc",
  "cxx",
@@ -1286,7 +1286,7 @@ dependencies = [
 
 [[package]]
 name = "quickshell_widgets"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "cxx",
  "cxx-qt",
