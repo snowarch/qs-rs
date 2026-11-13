@@ -246,10 +246,12 @@ signals:
 	void itemChanged();
 
 private:
-	// Geometry of the item and every ancestor affects mapToScene().
+	// Geometry, scale and rotation of the item and every ancestor affect mapToScene(): a card that pops
+	// in from scale 0.9 otherwise keeps a mask 10 % smaller than itself once it is whole.
 	void watch() {
 		for (auto* i = this->mItem; i != nullptr; i = i->parentItem()) {
-			for (auto sig: {&QQuickItem::xChanged, &QQuickItem::yChanged, &QQuickItem::widthChanged, &QQuickItem::heightChanged}) {
+			for (auto sig: {&QQuickItem::xChanged, &QQuickItem::yChanged, &QQuickItem::widthChanged, &QQuickItem::heightChanged,
+			                &QQuickItem::scaleChanged, &QQuickItem::rotationChanged}) {
 				this->conns << QObject::connect(i, sig, this, &PendingRegion::changed);
 			}
 			this->conns << QObject::connect(i, &QQuickItem::parentChanged, this, [this] { this->unwatch(); this->watch(); emit this->changed(); });

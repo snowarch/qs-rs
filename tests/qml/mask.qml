@@ -2,7 +2,8 @@ import QtQuick
 import Quickshell
 
 // Input masks follow upstream: the default intersection keeps the region as is, so an empty
-// Region makes a window click-through and an item region accepts input only there.
+// Region makes a window click-through and an item region accepts input only there, as big as the item
+// is drawn: its scale counts, and the mask follows when the scale moves.
 ShellRoot {
     id: root
     property var errors: []
@@ -15,6 +16,11 @@ ShellRoot {
         mask: Region { item: box }
         Rectangle { id: box; x: 10; width: 30; height: 20 }
     }
+    PanelWindow {
+        id: scaledMask; implicitWidth: 200; implicitHeight: 50
+        mask: Region { item: grown }
+        Rectangle { id: grown; x: 100; width: 40; height: 20; scale: 0.5 }
+    }
     PanelWindow { id: inverted; implicitWidth: 200; implicitHeight: 50; mask: Region { intersection: Intersection.Xor } }
     PanelWindow { id: none; implicitWidth: 200; implicitHeight: 50 }
 
@@ -24,6 +30,9 @@ ShellRoot {
             root.check("empty.passThrough", root.passThrough(empty))
             root.check("item.accepts", !root.passThrough(itemMask))
             root.check("item.region", QsWindowSupport.maskRect(itemMask._backingWindow) === "10,0 30x20")
+            root.check("scaled.region", QsWindowSupport.maskRect(scaledMask._backingWindow) === "110,5 20x10")
+            grown.scale = 1
+            root.check("scaled.follows", QsWindowSupport.maskRect(scaledMask._backingWindow) === "100,0 40x20")
             root.check("xor.full", !root.passThrough(inverted) && QsWindowSupport.maskRect(inverted._backingWindow) === "0,0 200x50")
             root.check("none.accepts", !root.passThrough(none))
             if (root.errors.length) console.log("FAILED: " + root.errors.join(", "))
