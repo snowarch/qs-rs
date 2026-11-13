@@ -3,9 +3,9 @@ import Quickshell.Wayland
 
 // Upstream's ScreencopyView. Screens (ShellScreen sources) are captured over wlr-screencopy by
 // QsScreencopyCapture (screencopy.rs) and drawn by QsScreencopyItem (screencopy.h). Windows
-// (Toplevel sources) are recorded through niri's ScreenCast by QsWindowCapture (windowcast.rs)
-// and drawn from DMA-BUFs by QsWindowCastItem (windowcast.h); niri 26.04 has none of the
-// Wayland window capture protocols upstream uses.
+// (Toplevel sources) are captured by QsWindowCapture over ext-image-copy-capture where the
+// compositor offers it (imagecopy.rs), else through niri's ScreenCast (windowcast.rs), and drawn
+// from DMA-BUFs by QsWindowCastItem (windowcast.h).
 Item {
     id: root
     property QtObject captureSource: null
@@ -14,6 +14,9 @@ Item {
     // qs-rs only (hasVersion feature "niri-window-capture"): the niri window to record, exact where a
     // Toplevel is matched by app id and title. -1 records captureSource.
     property int niriWindowId: -1
+    // qs-rs only (hasVersion feature "toplevel-image-copy"): the window's ext-foreign-toplevel
+    // identifier (niri: its window id in decimal; Umbriel: its IPC id). Empty records captureSource.
+    property string toplevelId: ""
     readonly property bool hasContent: _isWindow ? _window.hasContent : _capture.hasContent
     // The frame's size once the buffer transform is applied (a 90 or 270 degree screen swaps it).
     readonly property size sourceSize: !hasContent ? Qt.size(0, 0)
@@ -58,8 +61,9 @@ Item {
     // A ShellScreen wraps Qt's screen info, a Toplevel has an app id; nothing else is captureable.
     function _screenLike(source: QtObject): bool { return source !== null && source._info !== undefined }
     function _toplevelLike(source: QtObject): bool { return source !== null && source.appId !== undefined && source._qsKey !== undefined }
-    readonly property bool _isScreen: niriWindowId < 0 && _screenLike(captureSource)
-    readonly property bool _isWindow: niriWindowId >= 0 || _toplevelLike(captureSource)
+    readonly property bool _byId: niriWindowId >= 0 || toplevelId !== ""
+    readonly property bool _isScreen: !_byId && _screenLike(captureSource)
+    readonly property bool _isWindow: _byId || _toplevelLike(captureSource)
     // Not through the properties above: a change handler can run before the bindings they feed.
     onCaptureSourceChanged: if (captureSource !== null && !_screenLike(captureSource) && !_toplevelLike(captureSource)) console.warn(root, "Capture source set to non captureable object.")
 
@@ -82,8 +86,9 @@ Item {
     QsWindowCapture {
         id: _window
         windowId: root.niriWindowId
-        appId: root.niriWindowId < 0 && root._isWindow ? root.captureSource.appId : ""
-        title: root.niriWindowId < 0 && root._isWindow ? root.captureSource.title : ""
+        toplevelId: root.toplevelId
+        appId: !root._byId && root._isWindow ? root.captureSource.appId : ""
+        title: !root._byId && root._isWindow ? root.captureSource.title : ""
         paintCursor: root.paintCursor
         live: root.live
         onFrameReady: _windowItem.update()

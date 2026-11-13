@@ -8,6 +8,9 @@ QtObject {
     id: root
     readonly property QtObject toplevels: ObjectModel {}
     readonly property Toplevel activeToplevel: _active
+    // qs-rs only (hasVersion feature "toplevel-image-copy"): whether ScreencopyView can capture a
+    // window on this compositor (its ext-image-copy-capture globals, or niri's ScreenCast).
+    readonly property bool canCaptureWindows: QsWindowCaptureSupport.available
 
     property Toplevel _active: null
     property var _byKey: ({})

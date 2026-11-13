@@ -1,9 +1,10 @@
-//! ScreencopyView capture of single windows (upstream's toplevel capture). niri 26.04 has neither
-//! hyprland-toplevel-export nor ext-image-copy-capture, but it exports Mutter's ScreenCast D-Bus
-//! API without a dialog: RecordWindow takes a niri window id and the window arrives as a PipeWire
-//! stream of DMA-BUFs. The D-Bus half runs on the qs-dbus thread, the stream on one shared
-//! PipeWire thread, and QsWindowCastItem (windowcast.h) imports each buffer as an EGLImage
-//! texture on the render thread: no copy through the CPU.
+//! ScreencopyView capture of single windows (upstream's toplevel capture). Where the compositor
+//! offers ext-image-copy-capture of toplevels (Umbriel, niri after 26.04) imagecopy.rs captures
+//! them. niri 26.04 has neither that nor hyprland-toplevel-export, but it exports Mutter's
+//! ScreenCast D-Bus API without a dialog: RecordWindow takes a niri window id and the window
+//! arrives as a PipeWire stream of DMA-BUFs. The D-Bus half runs on the qs-dbus thread, the
+//! stream on one shared PipeWire thread, and QsWindowCastItem (windowcast.h) imports each buffer
+//! of either backend as an EGLImage texture on the render thread: no copy through the CPU.
 //!
 //! Buffers are held, not copied: the newest dequeued buffer waits in `Frames::pending` until the
 //! item takes it, and the item hands it back once a newer one replaced it on screen (niri keeps
@@ -21,8 +22,11 @@ pub mod qobject {
     extern "RustQt" {
         #[qobject]
         #[qml_element = "QsWindowCapture"]
-        /// niri window id to record; -1 resolves `appId`/`title` instead.
+        /// niri window id to record; -1 resolves `toplevelId`, then `appId`/`title`, instead.
         #[qproperty(i32, window_id, cxx_name = "windowId")]
+        /// The window's ext-foreign-toplevel identifier (niri: its window id in decimal; Umbriel:
+        /// its IPC id).
+        #[qproperty(QString, toplevel_id, cxx_name = "toplevelId")]
         #[qproperty(QString, app_id, cxx_name = "appId")]
         #[qproperty(QString, title)]
         #[qproperty(bool, paint_cursor, cxx_name = "paintCursor")]
@@ -49,6 +53,19 @@ pub mod qobject {
 
     impl cxx_qt::Initialize for WindowCapture {}
     impl cxx_qt::Threading for WindowCapture {}
+
+    extern "RustQt" {
+        #[qobject]
+        #[qml_element = "QsWindowCaptureSupport"]
+        #[qml_singleton]
+        /// Whether this compositor lets windows be captured: its ext-image-copy-capture globals,
+        /// or Mutter's ScreenCast on the session bus (niri 26.04).
+        #[qproperty(bool, available, READ, NOTIFY)]
+        type WindowCaptureSupport = super::WindowCaptureSupportRust;
+    }
+
+    impl cxx_qt::Initialize for WindowCaptureSupport {}
+    impl cxx_qt::Threading for WindowCaptureSupport {}
 }
 
 use core::pin::Pin;
@@ -72,6 +89,7 @@ const DRM_FORMAT_MOD_INVALID: u64 = 0x00ff_ffff_ffff_ffff;
 
 pub struct WindowCaptureRust {
     window_id: i32,
+    toplevel_id: QString,
     app_id: QString,
     title: QString,
     paint_cursor: bool,
@@ -80,8 +98,52 @@ pub struct WindowCaptureRust {
     buffer_size: QSize,
     frames: u64,
     shared: Arc<Frames>,
-    session: Option<Arc<Session>>,
+    session: Option<Backend>,
     update_queued: bool,
+}
+
+/// The recording behind a capture: a ScreenCast stream or an image-copy session.
+enum Backend {
+    Cast(Arc<Session>),
+    Copy(Arc<crate::imagecopy::Session>),
+}
+
+impl Backend {
+    fn id(&self) -> u64 {
+        match self {
+            Backend::Cast(s) => s.id,
+            Backend::Copy(s) => s.id,
+        }
+    }
+
+    fn shutdown(&self) {
+        match self {
+            Backend::Cast(s) => s.shutdown(),
+            Backend::Copy(s) => s.shutdown(),
+        }
+    }
+
+    fn set_live(&self, live: bool) {
+        match self {
+            Backend::Cast(s) => {
+                s.live.store(live, Ordering::Release);
+                send(if live { Cmd::Resume(s.id) } else { Cmd::Pause(s.id) });
+            }
+            Backend::Copy(s) => s.set_live(live),
+        }
+    }
+
+    fn capture(&self) {
+        match self {
+            Backend::Cast(s) => send(Cmd::Resume(s.id)),
+            Backend::Copy(s) => s.capture(),
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct WindowCaptureSupportRust {
+    available: bool,
 }
 
 impl Default for WindowCaptureRust {
@@ -89,6 +151,7 @@ impl Default for WindowCaptureRust {
         let shared = Arc::new(Frames::default());
         Self {
             window_id: -1,
+            toplevel_id: QString::default(),
             app_id: QString::default(),
             title: QString::default(),
             paint_cursor: false,
@@ -106,33 +169,41 @@ impl Default for WindowCaptureRust {
 /// What the stream and the render thread share: the newest frame and the buffers behind it.
 #[derive(Default)]
 pub struct Frames {
-    state: Mutex<FramesState>,
+    pub(crate) state: Mutex<FramesState>,
     /// Set while a frameReady is queued on the Qt thread (one per repaint, not per buffer).
     notify_queued: AtomicBool,
     qt: Mutex<Option<Qt>>,
 }
 
 #[derive(Default)]
-struct FramesState {
-    format: Option<Format>,
-    buffers: HashMap<u64, Planes>,
-    pending: Option<u64>,
+pub(crate) struct FramesState {
+    /// The stream's format (ScreenCast); image-copy buffers carry their own.
+    pub(crate) format: Option<Format>,
+    pub(crate) buffers: HashMap<u64, Planes>,
+    pub(crate) pending: Option<u64>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
-struct Format {
-    width: u32,
-    height: u32,
-    fourcc: u32,
-    modifier: u64,
+pub(crate) struct Format {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) fourcc: u32,
+    pub(crate) modifier: u64,
 }
 
 #[derive(Clone, Copy, Default)]
-struct Planes {
-    count: u32,
-    fds: [i32; 4],
-    offsets: [u32; 4],
-    strides: [u32; 4],
+pub(crate) struct Planes {
+    pub(crate) count: u32,
+    pub(crate) fds: [i32; 4],
+    pub(crate) offsets: [u32; 4],
+    pub(crate) strides: [u32; 4],
+    pub(crate) format: Option<Format>,
+}
+
+/// What to capture: an exact window, or the oldest one of an app (preferring a matching title).
+pub(crate) enum Target {
+    Id(String),
+    Match { app_id: String, title: String },
 }
 
 impl Frames {
@@ -142,7 +213,7 @@ impl Frames {
         }
     }
 
-    fn frame_arrived(&self) {
+    pub(crate) fn frame_arrived(&self) {
         if self.notify_queued.swap(true, Ordering::AcqRel) {
             return;
         }
@@ -159,10 +230,30 @@ impl Frames {
             }
         });
     }
+
+    /// The recording `id` now sends frames of this size.
+    pub(crate) fn resized(&self, id: u64, width: u32, height: u32) {
+        self.notify(move |mut obj| {
+            let size = QSize::new(width as i32, height as i32);
+            if obj.session.as_ref().is_some_and(|s| s.id() == id) && obj.buffer_size != size {
+                obj.as_mut().rust_mut().buffer_size = size;
+                obj.as_mut().buffer_size_changed();
+            }
+        });
+    }
+
+    /// The recording `id` ended on the compositor's side; a replaced one is ignored.
+    pub(crate) fn ended(&self, id: u64) {
+        self.notify(move |mut obj| {
+            if obj.session.as_ref().is_some_and(|s| s.id() == id) {
+                obj.as_mut().stop_from_stream();
+            }
+        });
+    }
 }
 
 /// Stream ids live in the top bits of every buffer key, so keys never repeat across streams.
-const KEY_SHIFT: u32 = 24;
+pub(crate) const KEY_SHIFT: u32 = 24;
 
 unsafe fn frames_ref<'a>(frames: usize) -> Option<&'a Frames> {
     // Safety (caller): `frames` is the `frames` property of a live QsWindowCapture or a pointer
@@ -173,8 +264,9 @@ unsafe fn frames_ref<'a>(frames: usize) -> Option<&'a Frames> {
 pub unsafe fn cast_take(frames: usize, out: &mut CastFrame) -> bool {
     let Some(frames) = (unsafe { frames_ref(frames) }) else { return false };
     let mut state = frames.state.lock().unwrap();
-    let (Some(key), Some(format)) = (state.pending.take(), state.format) else { return false };
+    let Some(key) = state.pending.take() else { return false };
     let Some(planes) = state.buffers.get(&key).copied() else { return false };
+    let Some(format) = planes.format.or(state.format) else { return false };
     out.key = key;
     out.width = format.width;
     out.height = format.height;
@@ -189,17 +281,30 @@ pub unsafe fn cast_take(frames: usize, out: &mut CastFrame) -> bool {
             for fd in &out.fds[..i] {
                 unsafe { libc::close(*fd) };
             }
-            send(Cmd::Release(key >> KEY_SHIFT, key));
+            drop(state);
+            release(key);
             return false;
         }
         out.offsets[i] = planes.offsets[i];
         out.strides[i] = planes.strides[i];
     }
+    drop(state);
+    if key & crate::imagecopy::KEY_FLAG != 0 {
+        crate::imagecopy::taken(key);
+    }
     true
 }
 
+fn release(key: u64) {
+    if key & crate::imagecopy::KEY_FLAG != 0 {
+        crate::imagecopy::release(key);
+    } else {
+        send(Cmd::Release(key >> KEY_SHIFT, key));
+    }
+}
+
 pub unsafe fn cast_release(_frames: usize, key: u64) {
-    send(Cmd::Release(key >> KEY_SHIFT, key));
+    release(key);
 }
 
 pub unsafe fn cast_alive(frames: usize, key: u64) -> bool {
@@ -226,6 +331,7 @@ enum Cmd {
     Close(u64),
     Release(u64, u64),
     Resume(u64),
+    Pause(u64),
 }
 
 fn send(cmd: Cmd) {
@@ -294,6 +400,12 @@ fn run(rx: pw::channel::Receiver<Cmd>) -> Result<(), pw::Error> {
             Cmd::Resume(id) => {
                 if let Some(entry) = entries.borrow().get(&id) {
                     let _ = entry.stream.set_active(true);
+                }
+            }
+            // A paused view keeps its last frame; niri stops sending until it resumes.
+            Cmd::Pause(id) => {
+                if let Some(entry) = entries.borrow().get(&id) {
+                    let _ = entry.stream.set_active(false);
                 }
             }
         }
@@ -416,12 +528,7 @@ fn open(core: &pw::core::CoreRc, id: u64, node: u32, frames: Arc<Frames>, live: 
             }
             if matches!(new, pw::stream::StreamState::Error(_) | pw::stream::StreamState::Unconnected) {
                 // Only for the current session: closing a replaced one disconnects it too.
-                let id = data.id;
-                data.frames.notify(move |mut obj| {
-                    if obj.session.as_ref().is_some_and(|s| s.id == id) {
-                        obj.as_mut().stop_from_stream();
-                    }
-                });
+                data.frames.ended(data.id);
             }
         })
         .param_changed(|stream, data, id, param| {
@@ -431,14 +538,7 @@ fn open(core: &pw::core::CoreRc, id: u64, node: u32, frames: Arc<Frames>, live: 
             let Some(format) = param.and_then(parse_format) else { return };
             let changed = data.frames.state.lock().unwrap().format.replace(format) != Some(format);
             if changed {
-                let (w, h, id) = (format.width as i32, format.height as i32, data.id);
-                data.frames.notify(move |mut obj| {
-                    let size = QSize::new(w, h);
-                    if obj.session.as_ref().is_some_and(|s| s.id == id) && obj.buffer_size != size {
-                        obj.as_mut().rust_mut().buffer_size = size;
-                        obj.as_mut().buffer_size_changed();
-                    }
-                });
+                data.frames.resized(data.id, format.width, format.height);
             }
             let params = buffer_params();
             let mut pods: Vec<&spa::pod::Pod> = params.iter().filter_map(|p| spa::pod::Pod::from_bytes(p)).collect();
@@ -555,11 +655,6 @@ struct Session {
     dead: AtomicBool,
     path: Mutex<Option<zbus::zvariant::OwnedObjectPath>>,
     live: Arc<AtomicBool>,
-}
-
-enum Target {
-    Id(u64),
-    Match { app_id: String, title: String },
 }
 
 impl Session {
@@ -691,7 +786,13 @@ async fn start(session: Arc<Session>, target: Target, cursor: u32, frames: Arc<F
     use zbus::zvariant::{OwnedObjectPath, Value};
     let conn = qs_dbus::rt::session().await?;
     let window = match target {
-        Target::Id(id) => id,
+        Target::Id(id) => match id.parse::<u64>() {
+            Ok(id) => id,
+            Err(_) => {
+                quickshell::qs_log!(info, LOG, "No niri window is called {id}; nothing to capture.");
+                return Ok(());
+            }
+        },
         Target::Match { app_id, title } => match resolve(&conn, &app_id, &title).await? {
             Some(id) => id,
             None => {
@@ -747,15 +848,13 @@ impl cxx_qt::Initialize for qobject::WindowCapture {
         *self.shared.qt.lock().unwrap() = Some(self.qt_thread());
         // The initial QML assignments coalesce into one session.
         self.as_mut().on_window_id_changed(|this| this.queue_update()).release();
+        self.as_mut().on_toplevel_id_changed(|this| this.queue_update()).release();
         self.as_mut().on_app_id_changed(|this| this.queue_update()).release();
         self.as_mut().on_paint_cursor_changed(|this| this.queue_update()).release();
         self.as_mut()
             .on_live_changed(|this| {
                 if let Some(s) = &this.session {
-                    s.live.store(this.live, Ordering::Release);
-                }
-                if this.live {
-                    this.capture_frame();
+                    s.set_live(this.live);
                 }
             })
             .release();
@@ -793,19 +892,27 @@ impl qobject::WindowCapture {
         // The title only picks among twins at start: a terminal retitles on every command, so a
         // title change never restarts the recording.
         let target = if self.window_id >= 0 {
-            Target::Id(self.window_id as u64)
+            Target::Id(self.window_id.to_string())
+        } else if !self.toplevel_id.is_empty() {
+            Target::Id(self.toplevel_id.to_string())
         } else if !self.app_id.is_empty() {
             Target::Match { app_id: self.app_id.to_string(), title: self.title.to_string() }
         } else {
             return;
         };
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        if crate::imagecopy::available() {
+            let session = crate::imagecopy::open(id, target, self.paint_cursor, self.live, self.shared.clone());
+            self.as_mut().rust_mut().session = Some(Backend::Copy(session));
+            return;
+        }
         let session = Arc::new(Session {
-            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+            id,
             dead: AtomicBool::new(false),
             path: Mutex::new(None),
             live: Arc::new(AtomicBool::new(self.live)),
         });
-        self.as_mut().rust_mut().session = Some(session.clone());
+        self.as_mut().rust_mut().session = Some(Backend::Cast(session.clone()));
         let (cursor, frames) = (if self.paint_cursor { 1 } else { 0 }, self.shared.clone());
         let qt = self.qt_thread();
         qs_dbus::rt::spawn(async move {
@@ -813,7 +920,7 @@ impl qobject::WindowCapture {
             if let Err(e) = start(session, target, cursor, frames).await {
                 quickshell::qs_log!(warn, LOG, "Cannot record the window: {e}");
                 let _ = qt.queue(move |mut this| {
-                    if this.session.as_ref().is_some_and(|s| s.id == id) {
+                    if this.session.as_ref().is_some_and(|s| s.id() == id) {
                         this.as_mut().stop_from_stream();
                     }
                 });
@@ -823,7 +930,7 @@ impl qobject::WindowCapture {
 
     fn capture_frame(self: Pin<&mut Self>) -> bool {
         let Some(s) = &self.session else { return false };
-        send(Cmd::Resume(s.id));
+        s.capture();
         true
     }
 
@@ -845,5 +952,28 @@ impl qobject::WindowCapture {
             self.as_mut().buffer_size_changed();
         }
         self.shared.state.lock().unwrap().format = None;
+    }
+}
+
+impl cxx_qt::Initialize for qobject::WindowCaptureSupport {
+    fn initialize(mut self: Pin<&mut Self>) {
+        if crate::imagecopy::available() {
+            self.as_mut().rust_mut().available = true;
+            return;
+        }
+        let qt = self.qt_thread();
+        qs_dbus::rt::spawn(async move {
+            let owned = async {
+                let conn = qs_dbus::rt::session().await?;
+                let bus = zbus::Proxy::new(&conn, "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus").await?;
+                bus.call::<_, _, bool>("NameHasOwner", &(SCREENCAST,)).await
+            };
+            if owned.await.unwrap_or(false) {
+                let _ = qt.queue(|mut this| {
+                    this.as_mut().rust_mut().available = true;
+                    this.as_mut().available_changed();
+                });
+            }
+        });
     }
 }

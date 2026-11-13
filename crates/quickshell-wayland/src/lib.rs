@@ -6,6 +6,7 @@ pub mod idle;
 pub mod screencopy;
 pub mod toplevel;
 pub mod castffi;
+pub mod imagecopy;
 pub mod windowcast;
 
 #[cfg(test)]
