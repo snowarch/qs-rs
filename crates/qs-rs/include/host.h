@@ -418,10 +418,13 @@ inline QStringList census_lines() {
 	// What each Loader or LazyLoader holds, until the next one down: "Bar.qml>Panel.qml" tells which surface a
 	// count belongs to when one window carries many.
 	QHash<QString, int> bySurface;
+	// Built but not shown: objects under an invisible item, by the file and id of the item that hides them (the
+	// first invisible one down from a visible parent). What a Loader could leave unbuilt until it shows.
+	QHash<QString, int> byHidden;
 	QSet<QObject*> seen;
 	// owner: the QML file nearest above, so a layer's or MultiEffect's inner C++ items are weighed under the file
 	// that asked for them.
-	std::function<void(QObject*, const QString&, const QString&)> walk = [&](QObject* o, const QString& owner, const QString& surface) {
+	std::function<void(QObject*, const QString&, const QString&, const QString&)> walk = [&](QObject* o, const QString& owner, const QString& surface, const QString& hiddenBy) {
 		if (!o || seen.contains(o)) return;
 		seen.insert(o);
 		auto* ctx = qmlContext(o);
@@ -429,6 +432,15 @@ inline QStringList census_lines() {
 		auto here = ctx ? file : owner;
 		byFile[file]++;
 		bySurface[surface]++;
+		QString hidden = hiddenBy;
+		if (auto* item = qobject_cast<QQuickItem*>(o); hidden.isEmpty() && item && !item->isVisible()
+		    && (!item->parentItem() || item->parentItem()->isVisible())) {
+			// Named by type, never by QQmlContext::nameForObject: for an object without an id it reads every
+			// property of the context object, and some getters are not safe to call from here.
+			auto type = QString(o->metaObject()->className()).remove(QRegularExpression("_QML(TYPE)?_\\d+$"));
+			hidden = QString("%1:%2%3").arg(here, type, o->objectName().isEmpty() ? QString() : "#" + o->objectName());
+		}
+		if (!hidden.isEmpty()) byHidden[hidden]++;
 		if (auto* item = qobject_cast<QQuickItem*>(o); item && item->isTextureProvider()) {
 			// What the item puts on the GPU: a loaded image's decoded size (its implicit size at the dpr), or
 			// the offscreen texture of a layer or a ShaderEffectSource that has a source (its textureSize,
@@ -466,18 +478,18 @@ inline QStringList census_lines() {
 			auto* cc = qmlContext(c);
 			return QString("%1>%2").arg(here, cc ? cc->baseUrl().fileName() : QString(c->metaObject()->className()));
 		};
-		for (auto* c: o->children()) walk(c, here, below(c));
-		if (auto* item = qobject_cast<QQuickItem*>(o)) for (auto* c: item->childItems()) walk(c, here, below(c));
+		for (auto* c: o->children()) walk(c, here, below(c), hidden);
+		if (auto* item = qobject_cast<QQuickItem*>(o)) for (auto* c: item->childItems()) walk(c, here, below(c), hidden);
 	};
 	QStringList windows;
 	for (auto* w: QGuiApplication::allWindows()) {
 		auto before = seen.size();
-		walk(w, {}, {});
-		if (auto* qw = qobject_cast<QQuickWindow*>(w)) walk(qw->contentItem(), {}, {});
+		walk(w, {}, {}, {});
+		if (auto* qw = qobject_cast<QQuickWindow*>(w)) walk(qw->contentItem(), {}, {}, {});
 		auto* ctx = qmlContext(w);
 		windows << QString("%1%2:%3").arg(w->isVisible() ? "" : "-", ctx ? ctx->baseUrl().fileName() : w->metaObject()->className()).arg(seen.size() - before);
 	}
-	walk(QCoreApplication::instance(), {}, {});
+	walk(QCoreApplication::instance(), {}, {}, {});
 	QList<QPair<int, QString>> top;
 	for (auto it = byFile.begin(); it != byFile.end(); ++it) top.append({it.value(), it.key()});
 	std::sort(top.begin(), top.end(), [](auto& a, auto& b) { return a.first > b.first; });
@@ -490,6 +502,13 @@ inline QStringList census_lines() {
 	std::sort(surfaces.begin(), surfaces.end(), [](auto& a, auto& b) { return a.first > b.first; });
 	for (int i = 0; i < std::min<int>(25, surfaces.size()); i++)
 		out << QString::asprintf("qsrs-census surface %6d %s", surfaces[i].first, qPrintable(surfaces[i].second.isEmpty() ? QString("-") : surfaces[i].second));
+	QList<QPair<int, QString>> hiddenTop;
+	int hiddenTotal = 0;
+	for (auto it = byHidden.begin(); it != byHidden.end(); ++it) { hiddenTop.append({it.value(), it.key()}); hiddenTotal += it.value(); }
+	std::sort(hiddenTop.begin(), hiddenTop.end(), [](auto& a, auto& b) { return a.first > b.first; });
+	out << QString::asprintf("qsrs-census hidden total=%d", hiddenTotal);
+	for (int i = 0; i < std::min<int>(25, hiddenTop.size()); i++)
+		out << QString::asprintf("qsrs-census hidden %6d %s", hiddenTop[i].first, qPrintable(hiddenTop[i].second));
 	for (auto [kind, table]: {std::pair {"images", &images}, std::pair {"layers", &layers}}) {
 		QList<QPair<qint64, QString>> heavy;
 		qint64 total = 0;
