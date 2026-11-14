@@ -99,26 +99,18 @@ public:
 
 	[[nodiscard]] QString source() const { return this->mSource; }
 
+	// A source's component is made when the loader first wants it, not when the source is given: each on-demand
+	// panel's whole type tree was compiled at start, opened or not. A background load compiles it in the background.
 	void setSource(QString source) {
 		if (!this->cleanupComponent) this->setComponent(nullptr);
 		if (source == this->mSource) return;
 		this->cleanupComponent = true;
 		this->mSource = std::move(source);
+		this->sourceFailed = false;
 		delete this->mComponent;
 		this->mComponent = nullptr;
-		if (!this->mSource.isEmpty()) {
-			auto* context = QQmlEngine::contextForObject(this);
-			this->mComponent = new QQmlComponent(
-			    context == nullptr ? nullptr : context->engine(),
-			    context == nullptr ? QUrl(this->mSource) : context->resolvedUrl(QUrl(this->mSource))
-			);
-			if (this->mComponent->isError()) {
-				qWarning().noquote() << this->mComponent->errorString();
-				delete this->mComponent;
-				this->mComponent = nullptr;
-			}
-		}
 		emit this->sourceChanged();
+		this->incubateIfReady();
 	}
 
 signals:
@@ -145,12 +137,42 @@ private:
 		emit this->activeChanged();
 	}
 
+	// The source's component, made on first want; false while it compiles or after it failed.
+	bool sourceReady() {
+		if (this->mComponent == nullptr) {
+			auto* context = QQmlEngine::contextForObject(this);
+			if (this->mSource.isEmpty() || this->sourceFailed || context == nullptr) return false;
+			this->mComponent = new QQmlComponent(context->engine(), this);
+			QObject::connect(this->mComponent, &QQmlComponent::statusChanged, this, [this](QQmlComponent::Status status) {
+				if (status == QQmlComponent::Ready) this->incubateIfReady();
+				else if (status == QQmlComponent::Error) this->dropComponent();
+			});
+			auto mode = this->targetActive ? QQmlComponent::PreferSynchronous : QQmlComponent::Asynchronous;
+			this->mComponent->loadUrl(context->resolvedUrl(QUrl(this->mSource)), mode);
+			// A load that fails at once has already dropped the component through its statusChanged.
+			if (this->mComponent != nullptr && this->mComponent->isError()) this->dropComponent();
+		}
+		return this->mComponent != nullptr && this->mComponent->isReady();
+	}
+
+	// A source that failed is not compiled again until it changes.
+	void dropComponent() {
+		qWarning().noquote() << this->mComponent->errorString();
+		this->mComponent->disconnect(this);
+		this->mComponent->deleteLater();
+		this->mComponent = nullptr;
+		this->sourceFailed = true;
+	}
+
 	void incubateIfReady(bool overrideReloadCheck = false) {
 		if (!(this->reloadComplete || overrideReloadCheck) || !(this->targetLoading || this->targetActive)
-		    || this->mComponent == nullptr || this->incubator != nullptr)
+		    || this->incubator != nullptr)
 		{
 			return;
 		}
+		if (this->cleanupComponent ? !this->sourceReady() : this->mComponent == nullptr) return;
+		// A component found ready inside loadUrl already incubated through its statusChanged.
+		if (this->incubator != nullptr || this->mItem != nullptr) return;
 		this->incubator = new QsQmlIncubator(
 		    this->targetActive ? QQmlIncubator::Synchronous : QQmlIncubator::Asynchronous,
 		    this
@@ -186,4 +208,5 @@ private:
 	QQmlComponent* mComponent = nullptr;
 	QsQmlIncubator* incubator = nullptr;
 	bool cleanupComponent = false;
+	bool sourceFailed = false;
 };
