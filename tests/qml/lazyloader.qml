@@ -2,7 +2,8 @@ import QtQuick
 import Quickshell
 
 // LazyLoader keeps bindings on `active` (upstream's setters never replace them) and creates its
-// item once, after the shell finished loading, nested loaders included.
+// item once, after the shell finished loading, nested loaders included. A source compiles on first want, in the
+// background for `loading`; reading `item` or setting `active` while it compiles still gives the item at once.
 ShellRoot {
     id: root
     property var errors: []
@@ -31,6 +32,9 @@ ShellRoot {
         source: "scopelib/Reservations.qml"
     }
 
+    LazyLoader { id: readWhileCompiling }
+    LazyLoader { id: activeWhileCompiling }
+
     Timer {
         interval: 50; running: true
         onTriggered: {
@@ -41,6 +45,13 @@ ShellRoot {
             root.check("binding.off", !bound.active && bound.item === null)
             root.flag = true
             root.check("binding.on", bound.active && bound.item !== null && root.created === 2)
+            readWhileCompiling.source = "scopelib/Deferred.qml"
+            readWhileCompiling.loading = true
+            root.check("compiling.read", readWhileCompiling.item !== null && readWhileCompiling.item.level === 2)
+            activeWhileCompiling.source = "scopelib/DeferredActive.qml"
+            activeWhileCompiling.loading = true
+            activeWhileCompiling.active = true
+            root.check("compiling.active", activeWhileCompiling.item !== null && activeWhileCompiling.item.level === 3)
             if (root.errors.length) console.log("FAILED: " + root.errors.join(", "))
             Qt.exit(root.errors.length ? 1 : 0)
         }

@@ -3,6 +3,7 @@
 // loader's state (item present, incubation running) while staying writable, so a QML binding on
 // them is never replaced by the loader's own changes. Nothing is created before the shell
 // finished loading (Reloadable::onReload).
+#include <memory>
 #include <QtCore/QObject>
 #include <QtQml/QQmlComponent>
 #include <QtQml/QQmlContext>
@@ -43,8 +44,9 @@ class LazyLoader: public Reloadable {
 public:
 	explicit LazyLoader(QObject* parent = nullptr): Reloadable(parent) {}
 
+	// Reading item while it loads completes it, a source still compiling for a background load included.
 	QObject* item() {
-		if (this->isLoading()) this->setActive(true);
+		if (this->isLoading() || (this->targetLoading && this->sourceCompiling())) this->setActive(true);
 		return this->mItem;
 	}
 
@@ -137,8 +139,22 @@ private:
 		emit this->activeChanged();
 	}
 
-	// The source's component, made on first want; false while it compiles or after it failed.
+	[[nodiscard]] bool sourceCompiling() const {
+		return this->cleanupComponent && this->mComponent != nullptr && this->mComponent->isLoading();
+	}
+
+	// The source's component, made on first want; false while it compiles or after it failed. Wanted active while it
+	// still compiles in the background, it is loaded again synchronously: Qt then finishes the background compile here
+	// (QQmlTypeLoader's handleExisting waits for it), so the item comes at once, as Quickshell gives it.
 	bool sourceReady() {
+		QQmlComponent* background = nullptr;
+		if (this->targetActive && this->sourceCompiling()) {
+			background = this->mComponent;
+			background->disconnect(this);
+			this->mComponent = nullptr;
+		}
+		// Deleted after the new load, so the compile it started stays in Qt's type cache for that load to finish.
+		const std::unique_ptr<QQmlComponent> dropBackground(background);
 		if (this->mComponent == nullptr) {
 			auto* context = QQmlEngine::contextForObject(this);
 			if (this->mSource.isEmpty() || this->sourceFailed || context == nullptr) return false;
