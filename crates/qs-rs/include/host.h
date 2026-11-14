@@ -413,24 +413,37 @@ inline QStringList census_lines() {
 	// Live texts by family and weight: what keeps a font loaded (count, hidden, first file).
 	struct Face { int count = 0, hidden = 0; QString file; };
 	QHash<QString, Face> faces;
+	// What ticks at rest: running repeating timers (by file and interval) and running animations.
+	QHash<QString, int> ticking;
 	QSet<QObject*> seen;
-	std::function<void(QObject*)> walk = [&](QObject* o) {
+	// owner: the QML file nearest above, so a layer's or MultiEffect's inner C++ items are weighed under the file
+	// that asked for them.
+	std::function<void(QObject*, const QString&)> walk = [&](QObject* o, const QString& owner) {
 		if (!o || seen.contains(o)) return;
 		seen.insert(o);
 		auto* ctx = qmlContext(o);
 		auto file = ctx ? ctx->baseUrl().fileName() : QString("<c++> ") + o->metaObject()->className();
+		auto here = ctx ? file : owner;
 		byFile[file]++;
 		if (auto* item = qobject_cast<QQuickItem*>(o); item && item->isTextureProvider()) {
-			// What the item puts on the GPU: an image's decoded size, or the offscreen texture of a
-			// layer or a ShaderEffectSource (its textureSize, else its own size, both at the dpr).
-			// Shared images count once per item: an upper bound.
+			// What the item puts on the GPU: a loaded image's decoded size (its implicit size at the dpr), or
+			// the offscreen texture of a layer or a ShaderEffectSource that has a source (its textureSize,
+			// else its own size). An empty Image or a sourceless one weighs nothing. Shared images count
+			// once per item: an upper bound.
 			bool image = QByteArray(o->metaObject()->className()).contains("Image");
-			auto size = image ? o->property("sourceSize").toSize() : o->property("textureSize").toSize();
 			auto dpr = item->window() ? item->window()->devicePixelRatio() : 1.0;
-			if (!image && size.isEmpty()) size = (item->size() * dpr).toSize();
-			auto& slot = (image ? images : layers)[file];
-			slot.first++;
-			slot.second += qint64(std::max(0, size.width())) * std::max(0, size.height()) * 4;
+			QSize size;
+			if (image) {
+				if (o->property("status").toInt() == 1) size = (QSizeF(item->implicitWidth(), item->implicitHeight()) * dpr).toSize();
+			} else if (o->metaObject()->indexOfProperty("sourceItem") < 0 || o->property("sourceItem").value<QObject*>()) {
+				size = o->property("textureSize").toSize();
+				if (size.isEmpty()) size = (item->size() * dpr).toSize();
+			}
+			if (!size.isEmpty()) {
+				auto& slot = (image ? images : layers)[ctx || owner.isEmpty() ? file : QString("%1 <%2>").arg(owner, o->metaObject()->className())];
+				slot.first++;
+				slot.second += qint64(size.width()) * size.height() * 4;
+			}
 		}
 		if (auto* item = qobject_cast<QQuickItem*>(o); item && (o->inherits("QQuickText") || o->inherits("QQuickTextInput") || o->inherits("QQuickTextEdit"))) {
 			auto font = o->property("font").value<QFont>();
@@ -439,18 +452,22 @@ inline QStringList census_lines() {
 			if (!item->isVisible()) face.hidden++;
 			if (face.file.isEmpty()) face.file = file;
 		}
-		for (auto* c: o->children()) walk(c);
-		if (auto* item = qobject_cast<QQuickItem*>(o)) for (auto* c: item->childItems()) walk(c);
+		if (o->inherits("QQmlTimer") && o->property("running").toBool() && o->property("repeat").toBool())
+			ticking[QString("timer %1ms %2").arg(o->property("interval").toInt()).arg(here)]++;
+		else if (o->inherits("QQuickAbstractAnimation") && o->property("running").toBool() && !o->property("paused").toBool())
+			ticking[QString("animation %1 %2").arg(o->metaObject()->className(), here)]++;
+		for (auto* c: o->children()) walk(c, here);
+		if (auto* item = qobject_cast<QQuickItem*>(o)) for (auto* c: item->childItems()) walk(c, here);
 	};
 	QStringList windows;
 	for (auto* w: QGuiApplication::allWindows()) {
 		auto before = seen.size();
-		walk(w);
-		if (auto* qw = qobject_cast<QQuickWindow*>(w)) walk(qw->contentItem());
+		walk(w, {});
+		if (auto* qw = qobject_cast<QQuickWindow*>(w)) walk(qw->contentItem(), {});
 		auto* ctx = qmlContext(w);
 		windows << QString("%1%2:%3").arg(w->isVisible() ? "" : "-", ctx ? ctx->baseUrl().fileName() : w->metaObject()->className()).arg(seen.size() - before);
 	}
-	walk(QCoreApplication::instance());
+	walk(QCoreApplication::instance(), {});
 	QList<QPair<int, QString>> top;
 	for (auto it = byFile.begin(); it != byFile.end(); ++it) top.append({it.value(), it.key()});
 	std::sort(top.begin(), top.end(), [](auto& a, auto& b) { return a.first > b.first; });
@@ -470,6 +487,9 @@ inline QStringList census_lines() {
 		for (int i = 0; i < std::min<int>(12, heavy.size()) && heavy[i].first >= (1 << 20); i++)
 			out << QString::asprintf("qsrs-census %s %5lldMB %s", kind, (long long)(heavy[i].first >> 20), qPrintable(heavy[i].second));
 	}
+	out << QString::asprintf("qsrs-census ticking %lld", (long long)ticking.size());
+	for (auto it = ticking.begin(); it != ticking.end(); ++it)
+		out << QString::asprintf("qsrs-census ticking %4d %s", it.value(), qPrintable(it.key()));
 	QList<QPair<int, QString>> byFace;
 	for (auto it = faces.begin(); it != faces.end(); ++it)
 		byFace.append({it->count, QString::asprintf("%5d %s (%d hidden) first in %s", it->count, qPrintable(it.key()), it->hidden, qPrintable(it->file))});
