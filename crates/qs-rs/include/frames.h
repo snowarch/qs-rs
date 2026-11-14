@@ -126,12 +126,16 @@ public:
 
 protected:
 	bool eventFilter(QObject* o, QEvent* e) override {
-		if (e->type() != QEvent::UpdateRequest || !o->isWindowType()) return false;
+		// An expose renders without an UpdateRequest: a request left from before a hide would count the
+		// seconds the window was away as its next frame's polish (a reopened Settings read 3 s, 182 missed).
+		auto type = e->type();
+		if ((type != QEvent::UpdateRequest && type != QEvent::Expose) || !o->isWindowType()) return false;
 		auto* qw = qobject_cast<QQuickWindow*>(o);
 		if (!qw) return false;
 		auto& w = this->hook(qw);
 		w.start = fc::now_ns();
 		w.animated = w.synced = w.rendered = 0;
+		if (type == QEvent::Expose) w.lastSwap = w.requestAt = 0;
 		return false;
 	}
 
