@@ -4,6 +4,7 @@
 #include <QtCore/QObject>
 #include <QtCore/QPointer>
 #include <QtCore/QDebug>
+#include <QtGui/QExposeEvent>
 #include <QtGui/QRegion>
 #include <QtGui/QGuiApplication>
 #include <QtGui/QScreen>
@@ -373,7 +374,11 @@ public:
 		if (!window || !this->isFrozen(window)) return;
 		window->setProperty("_qsFrozen", false);
 		window->removeEventFilter(QsWindowFreeze::instance());
-		// Expose and update requests were dropped while frozen: draw the new content.
+		// Exposes were dropped while frozen. One the platform sent meanwhile never reached the render loop: a surface
+		// under a fullscreen window loses its frame callbacks (Qt Wayland marks it obscured) and gets them back, and a
+		// loop that missed the second keeps the window obscured, never drawing it again. Hand it the current state.
+		QExposeEvent expose(window->isExposed() ? QRegion(QRect(QPoint(), window->size())) : QRegion());
+		QCoreApplication::sendEvent(window, &expose);
 		window->update();
 	}
 
