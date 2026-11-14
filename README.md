@@ -1,7 +1,7 @@
 # qs-rs
 
 Quickshell, rewritten in Rust, for exactly one shell: [iNiR](https://inir.space). Same QML API as Quickshell 0.3.2,
-same CLI and IPC, and the process is still called `qs`, so iNiR doesn't notice the swap. It just gets faster.
+same CLI and IPC, and the binary is still called `qs`, so iNiR doesn't notice the swap.
 
 Written by Hikari, an AI agent; the maintainer steers by what shows up on screen and doesn't read the code. The rules
 and plans behind it stay on the maintainer's machine, on purpose.
@@ -18,12 +18,12 @@ iNiR is a few pieces, each with one job:
 - [inir-hub](https://github.com/snowarch/inir-hub): the families, themes and widgets you install, served at
   [inir.space/hub](https://inir.space/hub).
 
-iNiR v2.33 runs on stock Quickshell. Its next update installs qs-rs prebuilt, with its own Qt, and falls back to
-Quickshell on a machine where qs-rs doesn't start.
+Since iNiR 3.0, setup and `inir update` install qs-rs prebuilt with its own Qt in `~/.local/share/inir/runtime`;
+iNiR's launcher runs Quickshell's `qs` only when that runtime is missing. iNiR v2.33 ran on stock Quickshell.
 
 ## Numbers
 
-iNiR on both runtimes, same config, each in its own headless KWin (2026-11-03, 3 runs each):
+iNiR on both runtimes, same factory config, each in its own headless KWin (qs-rs 0.1.1, 2026-11-03, 3 runs each):
 
 | | Quickshell 0.3.2 | qs-rs | |
 |---|---:|---:|---:|
@@ -38,6 +38,10 @@ iNiR on both runtimes, same config, each in its own headless KWin (2026-11-03, 3
 Quickshell keeps no QML cache for a shell, so every start is its cold start. Ryzen 7 5700G (Vega), Linux 7.3,
 Qt 6.12, Mesa 26.2.
 
+qs-rs 0.1.9 running a full daily iRiS desktop (2026-11-14, not the factory config above, so not comparable with
+it): 618 MB RSS, 562 MB PSS, 47 threads, 0.35 % of one core at rest (20 s). The binary is 19 MB; the bundle with
+its Qt and WebEngine, 457 MB on disk.
+
 ## What it adds
 
 - `qs errors`: every warning of the running shell, grouped by where it comes from (`--static` compiles every file
@@ -48,7 +52,7 @@ Qt 6.12, Mesa 26.2.
   (dmabuf, no copy). `sourceRect` crops it for free, and `sourceRectBase` keeps the crop in place when the window
   resizes.
 - WebEngine (`hasVersion(0, 3, ["webengine"])`), which iNiR's sidebar web apps run on.
-- Hot reload that keeps windows open, `watchFiles` (save to reload in 0.16 s), and on a crash the native backtrace plus
+- Hot reload that keeps windows open, `watchFiles` (save to reload), and on a crash the native backtrace plus
   the QML stack of every engine, `file.qml:line` included.
 
 ## Status
@@ -61,8 +65,8 @@ Greetd, X11.
 
 Every `v*` tag builds a bundle on CI: the binary plus the Qt 6.12 it was built against, so it runs the same on every
 distro ([Releases](https://github.com/snowarch/qs-rs/releases)). iNiR's setup and update install the one its base pins
-by sha256; nothing compiles on your machine. iNiR's launcher picks it up from `INIR_QS_BIN` and falls back to
-Quickshell when it's missing.
+by sha256; nothing compiles on your machine. iNiR's launcher takes it from `INIR_QS_BIN` or the installed runtime,
+and Quickshell's `qs` only when neither is there.
 
 To build it yourself:
 
