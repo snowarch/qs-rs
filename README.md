@@ -23,20 +23,23 @@ iNiR's launcher runs Quickshell's `qs` only when that runtime is missing. iNiR v
 
 ## Numbers
 
-iNiR on both runtimes, same factory config, each in its own headless KWin (qs-rs 0.1.1, 2026-11-03, 3 runs each):
+iNiR on both runtimes, same factory config, each in its own headless KWin (qs-rs 0.1.9 and iNiR 3.1.2, 2026-11-14;
+one run from an empty cache, then three):
 
 | | Quickshell 0.3.2 | qs-rs | |
 |---|---:|---:|---:|
-| first frame | 2.3 s | **0.74 s** | ~3x faster |
-| first frame, empty QML cache | 2.8 s | **2.5 s** | -10% |
-| CPU in the first 30 s | 5.5 s | **3.3 s** | -40% |
-| threads | 86 | **44** | -49% |
-| RSS | 560 MB | **474 MB** | -15% |
-| PSS | 443 MB | **413 MB** | -7% |
-| VRAM | 246 MiB | **220 MiB** | -11% |
+| first frame | 1.53 s | **0.69 s** | 2.2x faster |
+| first frame, empty cache | 1.96 s | **1.75 s** | -11% |
+| CPU in the first 30 s | 3.0 s | **1.0 s** | -66% |
+| threads | 79 | **39** | -51% |
+| RSS | 407 MB | **308 MB** | -24% |
+| PSS | 311 MB | **232 MB** | -25% |
+| GPU memory (VRAM + GTT) | 148 MiB | **132 MiB** | -11% |
 
-Quickshell keeps no QML cache for a shell, so every start is its cold start. Ryzen 7 5700G (Vega), Linux 7.3,
-Qt 6.12, Mesa 26.2.
+Empty cache means the run's whole cache folder (QML, shaders, fonts, the shell's own) was cleared; Quickshell
+keeps no QML cache for a shell, so its other starts compile every file again too. GPU memory is read from the
+driver (drm fdinfo): qs-rs keeps its window buffers in VRAM where Quickshell leaves them in system RAM (GTT), so
+VRAM alone reads higher on qs-rs (122 against 116 MiB). Ryzen 7 5700G (Vega), Linux 7.3, Qt 6.12, Mesa 26.2.
 
 qs-rs 0.1.9 running a full daily iRiS desktop (2026-11-14, not the factory config above, so not comparable with
 it): 618 MB RSS, 562 MB PSS, 47 threads, 0.35 % of one core at rest (20 s). The binary is 19 MB; the bundle with
