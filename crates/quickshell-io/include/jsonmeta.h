@@ -10,7 +10,7 @@
 #include <QtCore/QMetaContainer>
 #include <QtCore/QMetaProperty>
 #include <QtCore/QObject>
-#include <QtCore/QSequentialIterable>
+#include <QtCore/QMetaSequence>
 #include <QtQml/QJSValue>
 #include <QtQml/QQmlEngine>
 #include <QtQml/QQmlListProperty>
@@ -130,15 +130,15 @@ inline void deserializeRec(QObject* owner, const QJsonObject& json, QObject* obj
 				// A typed list (list<real>, list<int>) has no converter from QVariantList: built member by member, as
 				// Quickshell does (jsonadapter.cpp). A failed convert left it empty, and the next write saved [].
 				auto pval = prop.read(obj);
-				if (!variant.canConvert<QSequentialIterable>() || !pval.canView<QSequentialIterable>()) {
+				if (!variant.canConvert<QMetaSequence::Iterable>() || !pval.canView<QMetaSequence::Iterable>()) {
 					qWarning().nospace() << "JsonAdapter: failed to deserialize property " << prop.name() << ": expected "
 					                     << prop.metaType().name() << " but got " << variant.typeName();
 					continue;
 				}
 				v = QVariant(pval.metaType());
-				auto target = v.view<QSequentialIterable>().metaContainer();
+				auto target = v.view<QMetaSequence::Iterable>().metaContainer();
 				auto valueType = target.valueMetaType();
-				for (QVariant item: variant.value<QSequentialIterable>())
+				for (QVariant item: variant.value<QMetaSequence::Iterable>())
 					if (item.convert(valueType)) target.addValueAtEnd(v.data(), item.constData());
 			}
 			if (prop.read(obj) != v) prop.write(obj, v);
