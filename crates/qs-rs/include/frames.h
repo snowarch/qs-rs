@@ -35,6 +35,18 @@ inline qint64 driver_period_ns() {
 	return qint64(1e9 / hz);
 }
 
+// QSRS_SLOW=N runs every animation, spring and QML Timer N times slower, to film motion in a
+// nest: the clock Qt reads from the driver goes at 1/N of the wall clock. Frames keep their pace,
+// so each step of the motion gets N times as many of them. Read once; a factor of 1 or less is off.
+inline double animation_slowdown() {
+	static const double slow = [] {
+		bool ok = false;
+		auto value = qEnvironmentVariable("QSRS_SLOW").toDouble(&ok);
+		return ok && value > 1 ? value : 1.0;
+	}();
+	return slow;
+}
+
 inline qint64 window_period_ns(QWindow* w) {
 	if (auto forced = qEnvironmentVariableIntValue("QSRS_ANIMATION_HZ"); forced > 0) return qint64(1e9 / forced);
 	auto* s = w->screen();
@@ -385,10 +397,10 @@ public:
 	}
 
 	// Qt reads it when an animation starts or a step runs: the step's time, never behind the
-	// wall clock (a step for the next vblank is ahead of it).
+	// wall clock (a step for the next vblank is ahead of it). Under QSRS_SLOW it goes N times slower.
 	qint64 elapsed() const override {
 		if (!this->isRunning()) return 0;
-		return (std::max(fc::step_ns, fc::now_ns()) - this->origin) / 1000000;
+		return qint64(double(std::max(fc::step_ns, fc::now_ns()) - this->origin) / (1e6 * animation_slowdown()));
 	}
 
 protected:
