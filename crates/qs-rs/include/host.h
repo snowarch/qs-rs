@@ -1047,8 +1047,18 @@ inline void install_reload(QQmlEngine* engine, QObject* root, const QString& imp
 
 // Quickshell.reload() runs inside the old generation's JS (or while its root is still being
 // created): reload from the event loop once that has returned.
+// One queued reload stands for every request made before it starts. Saves spaced wider than the
+// watcher's settle time (an editor writing files one after another) each queued a reload, and each
+// ran after the one before: 13 edits gave 25 reloads of ~2 s, the desktop rebuilt for 55 s. A
+// request during a reload still gives one more after it, so the last save is always loaded.
+inline std::atomic<bool> reloadQueued {false};
+inline std::atomic<bool> reloadHard {false};
 inline void request_reload(bool hard) {
-	QMetaObject::invokeMethod(QCoreApplication::instance(), [hard]() {
+	if (hard) reloadHard.store(true);
+	if (reloadQueued.exchange(true)) return;
+	QMetaObject::invokeMethod(QCoreApplication::instance(), []() {
+		reloadQueued.store(false);
+		const bool hard = reloadHard.exchange(false);
 		if (QsShell::instance != nullptr) QsShell::instance->reload(hard);
 	}, Qt::QueuedConnection);
 }
