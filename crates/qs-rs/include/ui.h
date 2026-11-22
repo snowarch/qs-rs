@@ -7,6 +7,7 @@
 //   ui windows          the shown windows and where they sit
 //   ui find WORDS       items whose text or objectName holds WORDS (any case)
 //   ui at X Y           what is under a point in the window that takes the pointer there, bottom to top
+//   ui soft             layers and images Qt resamples off the pixel grid (see soft below)
 // `in:NAME` before any of them keeps one window (its layer namespace or the file declaring it, a prefix).
 //
 // One line per item: `cx cy  x y w h  window  Type  "text"  flags`, a text renderer's rect being its ink; flags: t (draws
@@ -24,6 +25,7 @@
 #include <QtQuick/QQuickItem>
 #include <QtQuick/QQuickWindow>
 #include <algorithm>
+#include <cmath>
 
 namespace qsrs::ui {
 
@@ -159,6 +161,43 @@ inline void walk(QQuickItem* item, const QPointF& origin, QRectF clip, qreal opa
 	for (auto* kid: paintOrder(item)) walk(kid, origin, clip, opacity, out, cut);
 }
 
+// `ui soft`: what Qt resamples. A layer draws its item into a texture, an image draws a picture; either one off the pixel
+// grid (a fractional position or size in device pixels, or a scale) is filtered onto the screen, and the text and icons it
+// carries turn soft. Native text alone snaps to the grid by itself. One line per item: `x y w h  window  Type  texts:N
+// images:M  parents`; a layer is listed only when it carries text or an image. Read it at rest: a motion is off the
+// grid on its way.
+inline bool offGrid(qreal v) { return std::abs(v - std::round(v)) > 0.02; }
+
+inline void carried(QQuickItem* item, int& texts, int& images) {
+	for (auto* kid: item->childItems()) {
+		if (!kid->isVisible() || kid->opacity() < 0.02) continue;
+		if (drawsText(kid) && !textOf(kid).trimmed().isEmpty()) texts++;
+		if (kid->inherits("QQuickImageBase")) images++;
+		carried(kid, texts, images);
+	}
+}
+
+inline void soft(QQuickItem* item, const QString& win, qreal dpr, QStringList& out) {
+	if (!item->isVisible() || item->opacity() < 0.02) return;
+	auto* layer = item->property("layer").value<QObject*>();
+	bool layered = layer && layer->property("enabled").toBool();
+	bool image = item->inherits("QQuickImageBase");
+	if ((layered || image) && item->width() > 1 && item->height() > 1) {
+		auto r = item->mapRectToScene(QRectF(0, 0, item->width(), item->height()));
+		int texts = 0, images = 0;
+		if (layered) carried(item, texts, images);
+		if ((offGrid(r.x() * dpr) || offGrid(r.y() * dpr) || offGrid(r.width() * dpr) || offGrid(r.height() * dpr))
+		    && (image || texts || images)) {
+			QStringList parents;
+			for (auto* p = item->parentItem(); p && parents.size() < 6; p = p->parentItem()) parents << typeName(p);
+			out << QString("%1 %2 %3 %4  %5  %6%7  texts:%8 images:%9  %10")
+			           .arg(r.x(), 0, 'f', 2).arg(r.y(), 0, 'f', 2).arg(r.width(), 0, 'f', 2).arg(r.height(), 0, 'f', 2)
+			           .arg(win, typeName(item), layered ? " [layer]" : "").arg(texts).arg(images).arg(parents.join('<'));
+		}
+	}
+	for (auto* kid: item->childItems()) soft(kid, win, dpr, out);
+}
+
 inline QString line(const Hit& h, const QString& win) {
 	auto r = h.rect;
 	auto text = textOf(h.item).replace('\n', "\\n");
@@ -206,6 +245,10 @@ inline QString report(const QString& arg) {
 			           .arg(known ? "" : "  (position unknown to the client)");
 			continue;
 		}
+		if (mode == "soft") {
+			soft(w->contentItem(), name, w->effectiveDevicePixelRatio(), out);
+			continue;
+		}
 		QList<Hit> hits;
 		QSet<QQuickItem*> cut;
 		textured(w->contentItem(), cut);
@@ -234,8 +277,8 @@ inline QString report(const QString& arg) {
 			out << line(h, name);
 		}
 	}
-	if (mode != "" && mode != "windows" && mode != "find" && mode != "at")
-		return "unknown ui action (windows, find WORDS, at X Y; in:WINDOW first keeps one window)";
+	if (mode != "" && mode != "windows" && mode != "find" && mode != "at" && mode != "soft")
+		return "unknown ui action (windows, find WORDS, at X Y, soft; in:WINDOW first keeps one window)";
 	return out.isEmpty() ? QString("nothing") : out.join('\n');
 }
 
