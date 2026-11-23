@@ -315,11 +315,28 @@ private:
 // left dirty with no frame coming, and stays stale until something else wakes it. Right after
 // each window's polish (afterAnimating), any other drawable window with dirtied items and no
 // request pending gets its frame asked for again.
+//
+// Same filter, second fix: a window the compositor resizes (a layer surface anchored to both
+// ends of an axis, narrowed by another's exclusive zone) lays its scene out at the new size, but
+// its first frame after the resize goes out in a buffer of the old size, which the compositor
+// scales into the new one: inir's dock drew shrunk and off its blur when a bar took a side, and
+// stayed so until something in it moved (tests/qml/shrinklayer.qml). One more frame after that
+// one is drawn at the new size.
 class PolishRelay: public QObject {
 public:
 	explicit PolishRelay(QObject* parent): QObject(parent) { qApp->installEventFilter(this); }
 
 	bool eventFilter(QObject* watched, QEvent* event) override {
+		if (event->type() == QEvent::Resize && watched->isWindowType()) {
+			auto* w = qobject_cast<QQuickWindow*>(watched);
+			if (w && !w->property("_qsrsRedraw").toBool()) {
+				w->setProperty("_qsrsRedraw", true);
+				QObject::connect(w, &QQuickWindow::frameSwapped, w, [w] {
+					w->setProperty("_qsrsRedraw", false);
+					w->update();
+				}, Qt::SingleShotConnection);
+			}
+		}
 		if (event->type() == QEvent::UpdateRequest && watched->isWindowType()) {
 			if (auto* w = qobject_cast<QQuickWindow*>(watched); w && !this->hooked.contains(w)) {
 				this->hooked.insert(w);
