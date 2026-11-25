@@ -138,77 +138,10 @@ pub mod qobject {
 use core::pin::Pin;
 use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::{QByteArray, QString};
-use std::collections::VecDeque;
 use std::io::Read as _;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
-use std::time::Duration;
-
-const MAX_IO_WORKERS: usize = 2;
-const IDLE_WORKER_TIMEOUT: Duration = Duration::from_secs(3);
-
-type Job = Box<dyn FnOnce() + Send>;
-
-struct IoPoolState {
-    queue: VecDeque<Job>,
-    workers: usize,
-    idle: usize,
-}
-
-struct IoPool {
-    state: Mutex<IoPoolState>,
-    wake: Condvar,
-}
-
-fn io_pool() -> &'static IoPool {
-    static POOL: OnceLock<IoPool> = OnceLock::new();
-    POOL.get_or_init(|| IoPool {
-        state: Mutex::new(IoPoolState { queue: VecDeque::new(), workers: 0, idle: 0 }),
-        wake: Condvar::new(),
-    })
-}
-
-impl IoPool {
-    fn submit(&self, job: impl FnOnce() + Send + 'static) {
-        let mut st = self.state.lock().unwrap();
-        st.queue.push_back(Box::new(job));
-        if st.idle == 0 && st.workers < MAX_IO_WORKERS {
-            st.workers += 1;
-            let spawned = std::thread::Builder::new().name("qs-io".into()).spawn(worker_loop);
-            if spawned.is_err() {
-                st.workers -= 1;
-            }
-        }
-        self.wake.notify_one();
-    }
-}
-
-fn worker_loop() {
-    let pool = io_pool();
-    loop {
-        let job = {
-            let mut st = pool.state.lock().unwrap();
-            loop {
-                if let Some(j) = st.queue.pop_front() {
-                    break j;
-                }
-                st.idle += 1;
-                let (next, res) = pool.wake.wait_timeout(st, IDLE_WORKER_TIMEOUT).unwrap();
-                st = next;
-                st.idle -= 1;
-                if let Some(j) = st.queue.pop_front() {
-                    break j;
-                }
-                if res.timed_out() {
-                    st.workers -= 1;
-                    return;
-                }
-            }
-        };
-        job();
-    }
-}
+use std::sync::{Arc, Condvar, Mutex};
 
 struct OpSlot {
     done: Mutex<Option<State>>,
@@ -579,7 +512,7 @@ impl qobject::FileViewInternal {
         let qt = self.qt_thread();
         let c = cancel.clone();
         let s = slot.clone();
-        io_pool().submit(move || {
+        quickshell::pool::submit(move || {
             let state = work(&c);
             s.complete(state);
             let _ = qt.queue(move |this| this.op_finished(id));
@@ -734,15 +667,15 @@ mod tests {
             .map(|i| {
                 let slot = OpSlot::new();
                 let s = slot.clone();
-                io_pool().submit(move || {
-                    std::thread::sleep(Duration::from_millis(5));
+                quickshell::pool::submit(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
                     s.complete(State { path: format!("f{i}"), exists: true, ..Default::default() });
                 });
                 slot
             })
             .collect();
-        let workers = io_pool().state.lock().unwrap().workers;
-        assert!(workers <= MAX_IO_WORKERS, "spawned {workers} > {MAX_IO_WORKERS}");
+        let workers = quickshell::pool::worker_count();
+        assert!(workers <= quickshell::pool::MAX_WORKERS, "spawned {workers} > {}", quickshell::pool::MAX_WORKERS);
         for (i, slot) in slots.iter().enumerate() {
             let st = slot.wait();
             assert_eq!(st.path, format!("f{i}"));

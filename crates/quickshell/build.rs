@@ -31,6 +31,7 @@ fn main() {
                 cc.include(d);
             }
             cc.file("src/cpp/windowprivate.cpp");
+            cc.file("src/cpp/folderlistmodel.cpp");
             // GCC's false positive on cxx's generated Vec<T>() for the desktop entry lists
             cc.flag_if_supported("-Wno-maybe-uninitialized");
         })
@@ -43,9 +44,10 @@ fn main() {
     .cpp_file("include/reload.h")
     .cpp_file("include/lazyloader.h")
     .cpp_file("include/desktopentry.h")
+    .cpp_file("include/folderlistmodel.h")
     .cpp_file("include/springvalue.h")
     .cpp_file("include/fieldregion.h")
-    .files(["src/global.rs", "src/util.rs", "src/clock.rs", "src/colorquantizer.rs", "src/desktopentry.rs", "src/fieldregion.rs", "src/spring.rs", "src/errorlog.rs", "src/log.rs"])
+    .files(["src/global.rs", "src/util.rs", "src/clock.rs", "src/colorquantizer.rs", "src/desktopentry.rs", "src/folderlist.rs", "src/fieldregion.rs", "src/spring.rs", "src/errorlog.rs", "src/log.rs"])
     .build()
     .export();
 }

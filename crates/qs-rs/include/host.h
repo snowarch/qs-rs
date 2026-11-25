@@ -865,7 +865,10 @@ inline void schedule_census(QQmlEngine* engine) {
 	timer->start(every * 1000);
 }
 
+extern "C" void qsrs_register_folder_list_model(const char* import_path_utf8);
+
 inline QQmlEngine* new_engine(const QString& importPath) {
+	qsrs_register_folder_list_model(importPath.toUtf8().constData());
 	auto* engine = new QQmlEngine();
 	engine->addImportPath(importPath);
 	engine->addUrlInterceptor(new RootUrlInterceptor(importPath + "/qs"));
