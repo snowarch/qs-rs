@@ -45,6 +45,40 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::OnceLock;
 
+#[derive(Default, Clone, Copy, PartialEq, Debug)]
+struct LocaleRef<'a> {
+    language: &'a str,
+    territory: &'a str,
+    modifier: &'a str,
+}
+
+impl<'a> LocaleRef<'a> {
+    /// `lang_COUNTRY.ENCODING@MODIFIER` without allocating.
+    #[inline]
+    fn parse(s: &'a str) -> Self {
+        let mut end = s.len();
+        let mut modifier = "";
+        if let Some(i) = s.find('@') {
+            modifier = &s[i + 1..];
+            end = i;
+        }
+        if let Some(i) = s[..end].find('.') {
+            end = i;
+        }
+        let mut territory = "";
+        if let Some(i) = s[..end].find('_') {
+            territory = &s[i + 1..end];
+            end = i;
+        }
+        LocaleRef { language: &s[..end], territory, modifier }
+    }
+
+    #[inline]
+    fn is_valid(&self) -> bool {
+        !self.language.is_empty()
+    }
+}
+
 #[derive(Default, Clone, PartialEq, Debug)]
 struct Locale {
     language: String,
@@ -55,28 +89,16 @@ struct Locale {
 impl Locale {
     /// `lang_COUNTRY.ENCODING@MODIFIER`
     fn parse(s: &str) -> Self {
-        let mut end = s.len();
-        let mut locale = Locale::default();
-        if let Some(i) = s.find('@') {
-            locale.modifier = s[i + 1..].to_string();
-            end = i;
+        let r = LocaleRef::parse(s);
+        Locale {
+            language: r.language.to_string(),
+            territory: r.territory.to_string(),
+            modifier: r.modifier.to_string(),
         }
-        if let Some(i) = s.find('.') {
-            end = i;
-        }
-        if let Some(i) = s.find('_') {
-            locale.territory = s[i + 1..end.max(i + 1)].to_string();
-            end = i;
-        }
-        locale.language = s[..end].to_string();
-        locale
     }
 
-    fn is_valid(&self) -> bool {
-        !self.language.is_empty()
-    }
-
-    fn match_score(&self, other: &Locale) -> i32 {
+    #[inline]
+    fn match_score(&self, other: &LocaleRef<'_>) -> i32 {
         if self.language != other.language
             || (!other.modifier.is_empty() && self.modifier != other.modifier)
             || (!other.territory.is_empty() && self.territory != other.territory)
@@ -95,11 +117,38 @@ impl Locale {
     }
 }
 
+#[inline]
+fn relevant_key(group: &str, key: &str) -> bool {
+    if group == "Desktop Entry" {
+        matches!(
+            key,
+            "Type"
+                | "Name"
+                | "GenericName"
+                | "StartupWMClass"
+                | "NoDisplay"
+                | "Hidden"
+                | "Comment"
+                | "Icon"
+                | "Exec"
+                | "Path"
+                | "Terminal"
+                | "Categories"
+                | "Keywords"
+                | "Actions"
+        )
+    } else if group.starts_with("Desktop Action ") {
+        matches!(key, "Name" | "Icon" | "Exec")
+    } else {
+        false
+    }
+}
+
 fn split_list(value: &str) -> Vec<String> {
     value.split(';').filter(|s| !s.is_empty()).map(String::from).collect()
 }
 
-pub fn parse_text(id: &str, text: &str) -> DesktopEntryData {
+pub fn parse_text<'a>(id: &str, text: &'a str) -> DesktopEntryData {
     let system = Locale::system();
     let mut data = DesktopEntryData {
         id: id.to_string(),
@@ -118,55 +167,55 @@ pub fn parse_text(id: &str, text: &str) -> DesktopEntryData {
         keywords: Vec::new(),
         actions: Vec::new(),
     };
-    let mut group = String::new();
+    let mut group: &'a str = "";
     // Insertion order kept so later keys win the same way upstream's QHash replacement does.
-    let mut entries: Vec<(String, Locale, String)> = Vec::new();
-    let mut action_order: Vec<String> = Vec::new();
-    let mut pending: HashMap<String, DesktopActionData> = HashMap::new();
+    // All slices borrow directly from `text`: zero per-line String allocations.
+    let mut entries: Vec<(&'a str, i32, bool, &'a str)> = Vec::with_capacity(16);
+    let mut action_order: Vec<&'a str> = Vec::new();
+    let mut pending: HashMap<&'a str, DesktopActionData> = HashMap::new();
 
-    let mut finish = |group: &str, entries: &mut Vec<(String, Locale, String)>, data: &mut DesktopEntryData| {
+    let mut finish = |group: &'a str, entries: &mut Vec<(&'a str, i32, bool, &'a str)>, data: &mut DesktopEntryData| {
         if group == "Desktop Entry" {
-            let ty = entries.iter().find(|(k, ..)| k == "Type").map(|(.., v)| v.as_str());
+            let ty = entries.iter().find(|(k, ..)| *k == "Type").map(|(.., v)| *v);
             // Upstream returns before clearing here, so these keys leak into the next group.
             if ty != Some("Application") {
                 return;
             }
-            for (key, _, value) in entries.iter() {
-                let value = value.clone();
-                match key.as_str() {
-                    "Name" => data.name = value,
-                    "GenericName" => data.generic_name = value,
-                    "StartupWMClass" => data.startup_class = value,
+            for &(key, _, _, value) in entries.iter() {
+                match key {
+                    "Name" => data.name = value.to_string(),
+                    "GenericName" => data.generic_name = value.to_string(),
+                    "StartupWMClass" => data.startup_class = value.to_string(),
                     "NoDisplay" => data.no_display = value == "true",
                     "Hidden" => data.hidden = value == "true",
-                    "Comment" => data.comment = value,
-                    "Icon" => data.icon = value,
+                    "Comment" => data.comment = value.to_string(),
+                    "Icon" => data.icon = value.to_string(),
                     "Exec" => {
-                        data.command = parse_exec_string(&value);
-                        data.exec_string = value;
+                        data.command = parse_exec_string(value);
+                        data.exec_string = value.to_string();
                     }
-                    "Path" => data.working_directory = value,
+                    "Path" => data.working_directory = value.to_string(),
                     "Terminal" => data.terminal = value == "true",
-                    "Categories" => data.categories = split_list(&value),
-                    "Keywords" => data.keywords = split_list(&value),
-                    "Actions" => action_order = split_list(&value),
+                    "Categories" => data.categories = split_list(value),
+                    "Keywords" => data.keywords = split_list(value),
+                    "Actions" => action_order = value.split(';').filter(|s| !s.is_empty()).collect(),
                     _ => {}
                 }
             }
         } else if let Some(name) = group.strip_prefix("Desktop Action ") {
             let mut action = DesktopActionData { id: name.to_string(), name: String::new(), icon: String::new(), exec_string: String::new(), command: Vec::new() };
-            for (key, _, value) in entries.iter() {
-                match key.as_str() {
-                    "Name" => action.name = value.clone(),
-                    "Icon" => action.icon = value.clone(),
+            for &(key, _, _, value) in entries.iter() {
+                match key {
+                    "Name" => action.name = value.to_string(),
+                    "Icon" => action.icon = value.to_string(),
                     "Exec" => {
                         action.command = parse_exec_string(value);
-                        action.exec_string = value.clone();
+                        action.exec_string = value.to_string();
                     }
                     _ => {}
                 }
             }
-            pending.insert(name.to_string(), action);
+            pending.insert(name, action);
         }
         entries.clear();
     };
@@ -177,38 +226,45 @@ pub fn parse_text(id: &str, text: &str) -> DesktopEntryData {
             continue;
         }
         if line.starts_with('[') && line.ends_with(']') && line.len() >= 2 {
-            finish(&group, &mut entries, &mut data);
-            group = line[1..line.len() - 1].to_string();
+            finish(group, &mut entries, &mut data);
+            group = &line[1..line.len() - 1];
             continue;
         }
         let Some(split) = line.find('=') else {
             continue;
         };
         let (mut key, value) = (&line[..split], &line[split + 1..]);
-        let mut locale = Locale::default();
+        let mut locale = LocaleRef::default();
         if let Some(i) = key.find('[')
-            && i != key.len() - 1 {
-                let end = if key.ends_with(']') { key.len() - 1 } else { key.len() };
-                locale = Locale::parse(&key[i + 1..end.max(i + 1)]);
-                key = &key[..i];
-            }
-        match entries.iter_mut().find(|(k, ..)| k == key) {
+            && i != key.len() - 1
+        {
+            let end = if key.ends_with(']') { key.len() - 1 } else { key.len() };
+            locale = LocaleRef::parse(&key[i + 1..end.max(i + 1)]);
+            key = &key[..i];
+        }
+        if !relevant_key(group, key) {
+            continue;
+        }
+        let new_score = if locale.is_valid() { system.match_score(&locale) } else { 0 };
+        if locale.is_valid() && new_score == 0 {
+            continue;
+        }
+        match entries.iter_mut().find(|(k, ..)| *k == key) {
             Some(old) => {
-                let old_score = system.match_score(&old.1);
-                let new_score = system.match_score(&locale);
-                if new_score > old_score || (old_score == 0 && !locale.is_valid()) {
-                    old.1 = locale;
-                    old.2 = value.to_string();
+                if new_score > old.1 || (old.1 == 0 && !locale.is_valid()) {
+                    old.1 = new_score;
+                    old.2 = locale.is_valid();
+                    old.3 = value;
                 }
             }
-            None => entries.push((key.to_string(), locale, value.to_string())),
+            None => entries.push((key, new_score, locale.is_valid(), value)),
         }
     }
-    finish(&group, &mut entries, &mut data);
+    finish(group, &mut entries, &mut data);
     drop(finish);
-    for id in &action_order {
-        if let Some(a) = pending.get(id) {
-            data.actions.push(DesktopActionData { id: a.id.clone(), name: a.name.clone(), icon: a.icon.clone(), exec_string: a.exec_string.clone(), command: a.command.clone() });
+    for id in action_order {
+        if let Some(a) = pending.remove(id) {
+            data.actions.push(a);
         }
     }
     data
@@ -289,16 +345,39 @@ pub fn desktop_paths() -> Vec<String> {
 
 fn scan_dir(dir: &Path, prefix: &str, out: &mut Vec<DesktopEntryData>) {
     let Ok(read) = std::fs::read_dir(dir) else { return };
-    let mut names: Vec<_> = read.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+    let mut items: Vec<(String, String, bool)> = Vec::new();
+    for e in read.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let is_dir = match e.file_type() {
+            Ok(ft) if ft.is_dir() => true,
+            Ok(ft) if ft.is_file() => {
+                if !name.ends_with(".desktop") {
+                    continue;
+                }
+                false
+            }
+            _ => {
+                let Ok(meta) = std::fs::metadata(e.path()) else { continue };
+                if meta.is_dir() {
+                    true
+                } else if meta.is_file() && name.ends_with(".desktop") {
+                    false
+                } else {
+                    continue;
+                }
+            }
+        };
+        let lower = name.to_lowercase();
+        items.push((lower, name, is_dir));
+    }
     // QDir's default order: by name, case-insensitive.
-    names.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()).then_with(|| a.cmp(b)));
-    for name in names {
+    items.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    for (_, name, is_dir) in items {
         let path = dir.join(&name);
-        let Ok(meta) = std::fs::metadata(&path) else { continue };
-        if meta.is_dir() {
+        if is_dir {
             let sub = if prefix.is_empty() { name.clone() } else { format!("{prefix}-{name}") };
             scan_dir(&path, &sub, out);
-        } else if meta.is_file() && name.ends_with(".desktop") {
+        } else {
             let Ok(bytes) = std::fs::read(&path) else { continue };
             let base = &name[..name.rfind('.').unwrap_or(name.len())];
             let id = if prefix.is_empty() { base.to_string() } else { format!("{prefix}-{base}") };
