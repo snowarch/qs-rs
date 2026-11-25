@@ -26,10 +26,29 @@ static STATE: Mutex<Option<State>> = Mutex::new(None);
 static HASHES: Mutex<BTreeMap<PathBuf, u64>> = Mutex::new(BTreeMap::new());
 
 /// Watches the files of a fresh scan (first load and every reload).
+/// When `Quickshell.watchFiles` is off, only the file hashes are kept and no inotify watches or
+/// watcher threads are started until watching is enabled.
 pub fn track(hashes: BTreeMap<PathBuf, u64>) {
-    let dirs: BTreeSet<PathBuf> = hashes.keys().filter_map(|f| f.parent().map(PathBuf::from)).collect();
     *HASHES.lock().unwrap() = hashes;
+    sync(quickshell::common::watch_files());
+}
+
+/// Called when `Quickshell.watchFiles` toggles: installs watches when turned on, drops them when off.
+pub fn sync(enabled: bool) {
+    let dirs: BTreeSet<PathBuf> = if enabled {
+        HASHES.lock().unwrap().keys().filter_map(|f| f.parent().map(PathBuf::from)).collect()
+    } else {
+        BTreeSet::new()
+    };
     let mut state = STATE.lock().unwrap();
+    if dirs.is_empty() {
+        if let Some(state) = state.as_mut() {
+            for gone in std::mem::take(&mut state.dirs) {
+                let _ = state.watcher.unwatch(&gone);
+            }
+        }
+        return;
+    }
     if state.is_none() {
         let Some(watcher) = start() else { return };
         *state = Some(State { watcher, dirs: BTreeSet::new() });

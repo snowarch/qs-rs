@@ -427,10 +427,21 @@ fn run_shell(cli: &cli::Cli, config: PathBuf, started: std::time::Instant) -> i3
             (runtime_dir().join(format!("vfs-{}", std::process::id())), None)
         }
     };
-    let scan = scan::Scan::new(&root_file).expect("scan failed");
     let vfs = vfs_root.join("qs");
-    scan.write_vfs(&vfs).expect("vfs write failed");
-    let entry = vfs.join(root_file.strip_prefix(&scan.root).unwrap());
+    // Scan the shell and mirror it into the VFS in parallel with Qt's own initialization
+    // (platform plugin load, Wayland handshake, fontconfig). Scan::new/write_vfs touch only
+    // std::fs and read no environment variables.
+    let scan_root = root_file.clone();
+    let scan_vfs = vfs.clone();
+    let scan_job = std::thread::Builder::new()
+        .name("qs-scan".into())
+        .spawn(move || -> std::io::Result<(scan::Scan, PathBuf)> {
+            let scan = scan::Scan::new(&scan_root)?;
+            scan.write_vfs(&scan_vfs)?;
+            let entry = scan_vfs.join(scan_root.strip_prefix(&scan.root).unwrap());
+            Ok((scan, entry))
+        })
+        .expect("spawn scan thread");
 
     heap_dumps();
     if let Some(dir) = curated_plugins() {
@@ -462,6 +473,7 @@ fn run_shell(cli: &cli::Cli, config: PathBuf, started: std::time::Instant) -> i3
             && !host::ffi::start_qml_debug_server(port, block) {
                 eprintln!("qs-rs: QML debug server failed on port {port}");
             }
+    let (scan, entry) = scan_job.join().expect("scan thread panicked").expect("scan/vfs failed");
     let engine = host::ffi::new_engine(&qstr(&vfs_root));
     if check {
         let code = check_shell(&scan, &vfs, unsafe { std::pin::Pin::new_unchecked(&mut *engine) });
@@ -469,6 +481,7 @@ fn run_shell(cli: &cli::Cli, config: PathBuf, started: std::time::Instant) -> i3
         return code;
     }
     quickshell::common::set_reload_hook(host::ffi::request_reload);
+    quickshell::common::set_watch_files_hook(watchfiles::sync);
     let root = unsafe { host::ffi::create_root(std::pin::Pin::new_unchecked(&mut *engine), &qstr(&entry)) };
     if !root.is_null() {
         let _ = host::SHELL.set((root_file.clone(), vfs.clone()));

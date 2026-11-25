@@ -60,7 +60,22 @@ pub fn watch_files() -> bool {
 
 /// Returns whether the value changed.
 pub fn set_watch_files(on: bool) -> bool {
-    WATCH_FILES.swap(on, std::sync::atomic::Ordering::Relaxed) != on
+    let changed = WATCH_FILES.swap(on, std::sync::atomic::Ordering::Relaxed) != on;
+    if changed
+        && let Some(hook) = WATCH_FILES_HOOK.get()
+    {
+        hook(watch_files());
+    }
+    changed
+}
+
+type WatchFilesHook = Box<dyn Fn(bool) + Send + Sync>;
+static WATCH_FILES_HOOK: OnceLock<WatchFilesHook> = OnceLock::new();
+
+/// The host installs a hook notified when `Quickshell.watchFiles` toggles, so the file watcher
+/// only watches directories (and spawns its threads) while watching is active.
+pub fn set_watch_files_hook(f: impl Fn(bool) + Send + Sync + 'static) {
+    let _ = WATCH_FILES_HOOK.set(Box::new(f));
 }
 
 type ReloadHook = Box<dyn Fn(bool) + Send + Sync>;

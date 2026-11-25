@@ -2,7 +2,7 @@
 //! directory (so `import qs.foo` and same-dir singletons work) and mirrors the shell into a VFS
 //! of symlinks that the QML engine loads from. Same rules as Quickshell's scan.cpp.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -12,6 +12,8 @@ pub struct Scan {
     pub root: PathBuf,
     /// Directories that got scanned, in scan order.
     pub dirs: Vec<PathBuf>,
+    /// Fast membership check for `dirs`.
+    dir_set: HashSet<PathBuf>,
     /// QML/JS files read during the scan.
     pub files: BTreeSet<PathBuf>,
     /// Synthesized file contents keyed by real path (qmldir files).
@@ -53,7 +55,7 @@ impl Scan {
             && (!t.starts_with(&root) || t.starts_with(&modules))
             && !foreign.iter().any(|f| t.starts_with(f)));
         let depth = scan.root.components().count() + 32; // past any shell folder: a link loop
-        let mut seen = BTreeSet::new();
+        let mut seen = HashSet::new();
         let mut stack = vec![scan.root.clone()];
         while let Some(dir) = stack.pop() {
             if dir.components().count() > depth || !seen.insert(dir.clone()) {
@@ -86,14 +88,21 @@ impl Scan {
     }
 
     fn scan_dir(&mut self, dir: &Path) {
-        if self.dirs.iter().any(|d| d == dir) {
+        if !self.dir_set.insert(dir.to_path_buf()) {
             return;
         }
         self.dirs.push(dir.to_path_buf());
         let Ok(rd) = fs::read_dir(dir) else { return };
-        let mut names: Vec<String> =
-            rd.flatten().filter(|e| e.path().is_file()).map(|e| e.file_name().to_string_lossy().into_owned()).collect();
-        names.sort();
+        let mut names: Vec<String> = rd
+            .flatten()
+            .filter(|e| match e.file_type() {
+                Ok(ft) if ft.is_file() => true,
+                Ok(ft) if ft.is_symlink() => e.path().is_file(),
+                _ => false,
+            })
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort_unstable();
         let mut entries = Vec::new();
         for name in &names {
             if name.starts_with(|c: char| c.is_uppercase()) && name.ends_with(".qml")
@@ -102,7 +111,7 @@ impl Scan {
                 }
         }
         // A shell-provided qmldir wins; its files are still scanned for imports.
-        if names.iter().any(|n| n == "qmldir") {
+        if names.binary_search_by(|n| n.as_str().cmp("qmldir")).is_ok() {
             return;
         }
         let mut qmldir = String::new();
@@ -135,9 +144,9 @@ impl Scan {
         let mut imports = Vec::new();
         // `import "root:X"` lines, rewritten to relative paths in the VFS copy (Qt treats an
         // unknown scheme in a directory import as remote and cannot read its qmldir).
-        let mut rewritten = false;
-        let mut header = Vec::new();
-        for raw in text.lines() {
+        let mut rewrites: Vec<(usize, String)> = Vec::new();
+        let mut header_lines = 0usize;
+        for (idx, raw) in text.lines().enumerate() {
             let line = raw.trim();
             if line == "pragma Singleton" {
                 info.singleton = true;
@@ -145,7 +154,7 @@ impl Scan {
                 info.internal = true;
             } else if line.starts_with("import") {
                 if let Some(at) = line.find(" qs.") {
-                    let module: String = line[at + 4..].chars().take_while(|c| *c != ' ').collect();
+                    let module = line[at + 4..].split(' ').next().unwrap_or("");
                     if module.chars().all(|c| c == '.' || c.is_ascii_alphanumeric() || c == '_') {
                         imports.push(self.root.join(module.replace('.', "/")));
                     }
@@ -159,28 +168,30 @@ impl Scan {
                                 let depth = base.strip_prefix(&self.root).map(|p| p.components().count()).unwrap_or(0);
                                 let rel = format!("{}{r}", "../".repeat(depth));
                                 let rel = if rel.is_empty() { ".".to_string() } else { rel };
-                                header.push(raw.replacen(&format!("\"{target}\""), &format!("\"{rel}\""), 1));
-                                rewritten = true;
+                                rewrites.push((idx, raw.replacen(&format!("\"{target}\""), &format!("\"{rel}\""), 1)));
                                 self.root.join(r)
                             }
-                            None => {
-                                header.push(raw.to_string());
-                                base.join(target)
-                            }
+                            None => base.join(target),
                         });
-                        continue;
                     }
             } else if line.contains('{') {
                 break;
             }
-            header.push(raw.to_string());
+            header_lines = idx + 1;
         }
-        if rewritten {
-            let rest: Vec<&str> = text.lines().skip(header.len()).collect();
-            let mut out = header.join("\n");
-            out.push('\n');
-            out.push_str(&rest.join("\n"));
-            out.push('\n');
+        if !rewrites.is_empty() {
+            let mut out = String::with_capacity(text.len() + 32);
+            let mut rw_iter = rewrites.into_iter().peekable();
+            for (idx, raw) in text.lines().enumerate() {
+                if idx < header_lines
+                    && let Some((_, rep)) = rw_iter.next_if(|(i, _)| *i == idx)
+                {
+                    out.push_str(&rep);
+                } else {
+                    out.push_str(raw);
+                }
+                out.push('\n');
+            }
             self.intercepts.insert(path.to_path_buf(), out);
         }
         self.scan_dir(path.parent().unwrap());
@@ -225,7 +236,7 @@ impl Scan {
                 }
             }
         }
-        let mut keep: BTreeSet<PathBuf> = BTreeSet::new();
+        let mut keep: HashSet<PathBuf> = HashSet::new();
         for dir in &real {
             let out = vfs.join(dir.strip_prefix(&self.root).unwrap());
             if !fs::symlink_metadata(&out).is_ok_and(|m| m.is_dir()) {
@@ -251,7 +262,7 @@ impl Scan {
         for (path, content) in &self.intercepts {
             if let Ok(rel) = path.strip_prefix(&self.root) {
                 let dst = vfs.join(rel);
-                let same = fs::symlink_metadata(&dst).is_ok_and(|m| m.is_file())
+                let same = fs::symlink_metadata(&dst).is_ok_and(|m| m.is_file() && m.len() == content.len() as u64)
                     && fs::read(&dst).is_ok_and(|c| c == content.as_bytes());
                 if !same {
                     remove_any(&dst);
@@ -273,7 +284,7 @@ fn remove_any(p: &Path) {
 }
 
 /// Removes everything under `dir` that is not in `keep`.
-fn prune(dir: &Path, keep: &BTreeSet<PathBuf>) -> io::Result<()> {
+fn prune(dir: &Path, keep: &HashSet<PathBuf>) -> io::Result<()> {
     for entry in fs::read_dir(dir)?.flatten() {
         let p = entry.path();
         if !keep.contains(&p) {
