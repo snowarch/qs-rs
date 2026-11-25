@@ -1,6 +1,9 @@
 #pragma once
 // Small Qt helpers that cxx-qt-lib does not expose. Kept header-only and minimal.
 #include <QtCore/QCryptographicHash>
+#include <QtCore/QDateTime>
+#include <QtCore/QMetaObject>
+#include <QtCore/QTimer>
 #include <QtCore/QVariant>
 #include <QtGui/QColor>
 #include <QtGui/QIcon>
@@ -22,6 +25,16 @@ inline QString md5_hex(const QString& s) {
 }
 
 inline bool has_theme_icon(const QString& name) { return QIcon::hasThemeIcon(name); }
+
+inline QDateTime datetime_from_ms(int64_t ms) { return QDateTime::fromMSecsSinceEpoch(static_cast<qint64>(ms)); }
+
+// Single-shot wall-clock wake-up bound to `target`'s lifetime (cancelled automatically if destroyed).
+inline void schedule_clock(QObject* target, int32_t delayMs, uint64_t generation) {
+	if (!target) return;
+	QTimer::singleShot(std::max<int>(1, delayMs), target, [target, generation] {
+		QMetaObject::invokeMethod(target, "_qsTick", Qt::DirectConnection, Q_ARG(std::uint64_t, generation));
+	});
+}
 
 // image://icon/<name>[?path=<dir>|?fallback=<name>], same scheme as Quickshell.
 class IconImageProvider: public QQuickImageProvider {

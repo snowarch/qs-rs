@@ -19,7 +19,7 @@ fn main() {
     let builder = CxxQtBuilder::new_qml_module(
         QmlModule::new("Quickshell")
             .version(0, 1)
-            .qml_files(["qml/Scope.qml", "qml/ShellRoot.qml", "qml/Variants.qml", "qml/Singleton.qml", "qml/ShellScreen.qml", "qml/PanelAnchors.qml", "qml/PanelMargins.qml", "qml/ProxyWindowBase.qml", "qml/PanelWindow.qml", "qml/FloatingWindow.qml", "qml/PopupWindow.qml", "qml/SystemClock.qml", "qml/QsMenuHandle.qml", "qml/QsMenuEntry.qml", "qml/QsMenuOpener.qml"])
+            .qml_files(["qml/Scope.qml", "qml/ShellRoot.qml", "qml/Variants.qml", "qml/Singleton.qml", "qml/ShellScreen.qml", "qml/PanelAnchors.qml", "qml/PanelMargins.qml", "qml/ProxyWindowBase.qml", "qml/PanelWindow.qml", "qml/FloatingWindow.qml", "qml/PopupWindow.qml", "qml/QsMenuHandle.qml", "qml/QsMenuEntry.qml", "qml/QsMenuOpener.qml"])
             .qml_file(QmlFile::from("qml/Quickshell.qml").singleton(true))
             .qml_file(QmlFile::from("qml/QsMenuButtonType.qml").singleton(true)),
     )
@@ -45,7 +45,7 @@ fn main() {
     .cpp_file("include/desktopentry.h")
     .cpp_file("include/springvalue.h")
     .cpp_file("include/fieldregion.h")
-    .files(["src/global.rs", "src/util.rs", "src/colorquantizer.rs", "src/desktopentry.rs", "src/fieldregion.rs", "src/spring.rs", "src/errorlog.rs", "src/log.rs"])
+    .files(["src/global.rs", "src/util.rs", "src/clock.rs", "src/colorquantizer.rs", "src/desktopentry.rs", "src/fieldregion.rs", "src/spring.rs", "src/errorlog.rs", "src/log.rs"])
     .build()
     .export();
 }

@@ -1,3 +1,4 @@
+pub mod clock;
 pub mod colorquantizer;
 pub mod common;
 pub mod datastream;
