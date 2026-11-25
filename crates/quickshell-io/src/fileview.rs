@@ -138,10 +138,101 @@ pub mod qobject {
 use core::pin::Pin;
 use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::{QByteArray, QString};
+use std::collections::VecDeque;
+use std::io::Read as _;
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread::JoinHandle;
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::time::Duration;
+
+const MAX_IO_WORKERS: usize = 4;
+const IDLE_WORKER_TIMEOUT: Duration = Duration::from_secs(15);
+
+type Job = Box<dyn FnOnce() + Send>;
+
+struct IoPoolState {
+    queue: VecDeque<Job>,
+    workers: usize,
+    idle: usize,
+}
+
+struct IoPool {
+    state: Mutex<IoPoolState>,
+    wake: Condvar,
+}
+
+fn io_pool() -> &'static IoPool {
+    static POOL: OnceLock<IoPool> = OnceLock::new();
+    POOL.get_or_init(|| IoPool {
+        state: Mutex::new(IoPoolState { queue: VecDeque::new(), workers: 0, idle: 0 }),
+        wake: Condvar::new(),
+    })
+}
+
+impl IoPool {
+    fn submit(&self, job: impl FnOnce() + Send + 'static) {
+        let mut st = self.state.lock().unwrap();
+        st.queue.push_back(Box::new(job));
+        if st.idle == 0 && st.workers < MAX_IO_WORKERS {
+            st.workers += 1;
+            let spawned = std::thread::Builder::new().name("qs-io".into()).spawn(worker_loop);
+            if spawned.is_err() {
+                st.workers -= 1;
+            }
+        }
+        self.wake.notify_one();
+    }
+}
+
+fn worker_loop() {
+    let pool = io_pool();
+    loop {
+        let job = {
+            let mut st = pool.state.lock().unwrap();
+            loop {
+                if let Some(j) = st.queue.pop_front() {
+                    break j;
+                }
+                st.idle += 1;
+                let (next, res) = pool.wake.wait_timeout(st, IDLE_WORKER_TIMEOUT).unwrap();
+                st = next;
+                st.idle -= 1;
+                if let Some(j) = st.queue.pop_front() {
+                    break j;
+                }
+                if res.timed_out() {
+                    st.workers -= 1;
+                    return;
+                }
+            }
+        };
+        job();
+    }
+}
+
+struct OpSlot {
+    done: Mutex<Option<State>>,
+    wake: Condvar,
+}
+
+impl OpSlot {
+    fn new() -> Arc<Self> {
+        Arc::new(Self { done: Mutex::new(None), wake: Condvar::new() })
+    }
+
+    fn complete(&self, state: State) {
+        *self.done.lock().unwrap() = Some(state);
+        self.wake.notify_all();
+    }
+
+    fn wait(&self) -> State {
+        let mut g = self.done.lock().unwrap();
+        while g.is_none() {
+            g = self.wake.wait(g).unwrap();
+        }
+        g.take().unwrap_or_default()
+    }
+}
 
 #[derive(Default)]
 pub struct FileViewErrorRust;
@@ -177,7 +268,7 @@ struct Op {
     kind: Kind,
     path: String,
     cancel: Arc<AtomicBool>,
-    handle: JoinHandle<State>,
+    slot: Arc<OpSlot>,
 }
 
 pub struct FileViewRust {
@@ -230,13 +321,26 @@ pub fn read(path: &str, print: bool, cancel: &AtomicBool) -> State {
         }
     };
     let p = Path::new(path);
-    state.exists = p.exists();
-    if !state.exists {
-        warn("File does not exist.");
-        state.error = 2;
-        return state;
-    }
-    if !p.is_file() {
+    let meta = match std::fs::metadata(p) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            warn("File does not exist.");
+            state.error = 2;
+            return state;
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            warn("Permission denied.");
+            state.error = 3;
+            return state;
+        }
+        Err(_) => {
+            warn("File does not exist.");
+            state.error = 2;
+            return state;
+        }
+    };
+    state.exists = true;
+    if !meta.is_file() {
         warn("Not a file.");
         state.error = 4;
         return state;
@@ -244,7 +348,12 @@ pub fn read(path: &str, print: bool, cancel: &AtomicBool) -> State {
     if cancel.load(Ordering::Acquire) {
         return state;
     }
-    match std::fs::read(p) {
+    match std::fs::File::open(p).and_then(|mut f| {
+        let cap = (meta.len() as usize).min(64 * 1024 * 1024);
+        let mut buf = Vec::with_capacity(cap);
+        f.read_to_end(&mut buf)?;
+        Ok(buf)
+    }) {
         Ok(data) => state.data = data,
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
             warn("Permission denied.");
@@ -463,17 +572,19 @@ impl qobject::FileViewInternal {
 
     fn start_op(mut self: Pin<&mut Self>, kind: Kind, path: String, work: impl FnOnce(&AtomicBool) -> State + Send + 'static) {
         let cancel = Arc::new(AtomicBool::new(false));
+        let slot = OpSlot::new();
         let mut rust = self.as_mut().rust_mut();
         rust.next_id += 1;
         let id = rust.next_id;
         let qt = self.qt_thread();
         let c = cancel.clone();
-        let handle = std::thread::spawn(move || {
+        let s = slot.clone();
+        io_pool().submit(move || {
             let state = work(&c);
+            s.complete(state);
             let _ = qt.queue(move |this| this.op_finished(id));
-            state
         });
-        self.as_mut().rust_mut().live = Some(Op { id, kind, path, cancel, handle });
+        self.as_mut().rust_mut().live = Some(Op { id, kind, path, cancel, slot });
     }
 
     fn load_async(mut self: Pin<&mut Self>) {
@@ -515,7 +626,7 @@ impl qobject::FileViewInternal {
             return;
         }
         let op = self.as_mut().rust_mut().live.take().unwrap();
-        let state = op.handle.join().unwrap_or_default();
+        let state = op.slot.wait();
         self.finish(op.kind, state);
     }
 
@@ -531,7 +642,7 @@ impl qobject::FileViewInternal {
 
     fn wait_for_job(mut self: Pin<&mut Self>) -> bool {
         let Some(op) = self.as_mut().rust_mut().live.take() else { return false };
-        let state = op.handle.join().unwrap_or_default();
+        let state = op.slot.wait();
         self.finish(op.kind, state);
         true
     }
@@ -560,7 +671,6 @@ impl qobject::FileViewInternal {
             quickshell::qs_log!(warn, "quickshell.io.fileview", "Cannot write file, as no path has been specified.");
             return;
         }
-        self.as_mut().rust_mut().write_data = Some(data.clone());
         let (path, atomic, print) = (self.target_path.clone(), self.atomic_writes, self.print_errors);
         if self.block_writes {
             if self.live.is_some() {
@@ -608,8 +718,34 @@ impl Drop for FileViewRust {
         if let Some(op) = self.live.take() {
             op.cancel.store(true, Ordering::Release);
             if op.kind == Kind::Write {
-                let _ = op.handle.join();
+                let _ = op.slot.wait();
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pool_bounds_worker_threads_for_burst_of_ops() {
+        let slots: Vec<_> = (0..32)
+            .map(|i| {
+                let slot = OpSlot::new();
+                let s = slot.clone();
+                io_pool().submit(move || {
+                    std::thread::sleep(Duration::from_millis(5));
+                    s.complete(State { path: format!("f{i}"), exists: true, ..Default::default() });
+                });
+                slot
+            })
+            .collect();
+        let workers = io_pool().state.lock().unwrap().workers;
+        assert!(workers <= MAX_IO_WORKERS, "spawned {workers} > {MAX_IO_WORKERS}");
+        for (i, slot) in slots.iter().enumerate() {
+            let st = slot.wait();
+            assert_eq!(st.path, format!("f{i}"));
         }
     }
 }
