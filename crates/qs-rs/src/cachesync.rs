@@ -106,10 +106,39 @@ fn prune(dir: &Path, keep: Duration) {
 }
 
 fn in_cache(fd: c_int) -> Option<&'static Path> {
+    if fd < 0 {
+        return None;
+    }
     let dir = DIR.get()?;
-    let target = std::fs::read_link(format!("/proc/self/fd/{fd}")).ok()?;
-    let rest = target.as_os_str().as_bytes().strip_prefix(dir.as_os_str().as_bytes())?;
-    (rest.first() == Some(&b'/') && !target.ends_with(MARKER)).then_some(dir)
+    // Format `/proc/self/fd/<fd>\0` and readlink into stack buffers: zero heap allocation inside
+    // interposed fsync/fdatasync.
+    let mut link_path = [0u8; 32];
+    const PREFIX: &[u8] = b"/proc/self/fd/";
+    link_path[..PREFIX.len()].copy_from_slice(PREFIX);
+    let mut digits = [0u8; 12];
+    let mut v = fd as u32;
+    let mut dlen = 0;
+    loop {
+        digits[dlen] = b'0' + (v % 10) as u8;
+        dlen += 1;
+        v /= 10;
+        if v == 0 {
+            break;
+        }
+    }
+    for i in 0..dlen {
+        link_path[PREFIX.len() + i] = digits[dlen - 1 - i];
+    }
+    link_path[PREFIX.len() + dlen] = 0;
+
+    let mut target = [0u8; 4096];
+    let n = unsafe { libc::readlink(link_path.as_ptr().cast(), target.as_mut_ptr().cast(), target.len()) };
+    if n <= 0 {
+        return None;
+    }
+    let target = &target[..n as usize];
+    let rest = target.strip_prefix(dir.as_os_str().as_bytes())?;
+    (rest.first() == Some(&b'/') && !target.ends_with(MARKER.as_bytes())).then_some(dir)
 }
 
 fn real_fsync(fd: c_int) -> c_int {

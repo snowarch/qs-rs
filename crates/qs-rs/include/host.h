@@ -652,17 +652,20 @@ private:
 		return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 	}
 
-	// Runs inside every QObject destructor, on any thread: a counter and, once per burst, one
-	// queued call to the watcher.
+	// Runs inside every QObject destructor, on any thread: one relaxed atomic add on 63/64
+	// destructions, checking the clock every 64th or once the burst threshold is reached.
 	static void removed(QObject* o) {
 		if (previousRemove) previousRemove(o);
+		const int count = destroyed.fetch_add(1, std::memory_order_relaxed) + 1;
+		if ((count & 63) != 0 && count < burst) return;
 		auto now = nowMs();
 		auto start = burstStart.load(std::memory_order_relaxed);
 		if (now - start > window) {
 			burstStart.store(now, std::memory_order_relaxed);
-			destroyed.store(0, std::memory_order_relaxed);
+			destroyed.store(1, std::memory_order_relaxed);
+			return;
 		}
-		if (destroyed.fetch_add(1, std::memory_order_relaxed) + 1 < burst) return;
+		if (count < burst) return;
 		auto* watcher = current.load();
 		if (watcher == nullptr || told.exchange(true)) return;
 		QMetaObject::invokeMethod(watcher, [watcher] {

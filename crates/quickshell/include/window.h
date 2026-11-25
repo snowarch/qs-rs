@@ -305,13 +305,19 @@ class QsWindowSupport: public QObject {
 
 public:
 	// Input mask: the region applied to the full window rect; a mask that ends up empty makes
-	// the window transparent for input, a null mask restores normal input.
+	// the window transparent for input, a null mask restores normal input. Unchanged masks are
+	// skipped so animated windows do not spam wl_surface.set_input_region.
 	Q_INVOKABLE void applyMask(QQuickWindow* window, PendingRegion* mask) {
 		if (!window) return;
 		QRegion region;
 		if (mask) region = mask->applyTo(QRect(0, 0, window->width(), window->height()));
-		window->setFlag(Qt::WindowTransparentForInput, mask != nullptr && region.isEmpty());
-		window->setMask(region);
+		const bool transparent = mask != nullptr && region.isEmpty();
+		if (window->flags().testFlag(Qt::WindowTransparentForInput) != transparent) {
+			window->setFlag(Qt::WindowTransparentForInput, transparent);
+		}
+		if (window->mask() != region) {
+			window->setMask(region);
+		}
 	}
 
 	// Bounding rect of a window's input mask as "x,y wxh" (tests).
