@@ -202,9 +202,9 @@ pub fn start_server(instance_dir: &Path) {
             return;
         }
     };
-    std::thread::spawn(move || {
+    let _ = std::thread::Builder::new().name("qs-ipc".into()).spawn(move || {
         for stream in listener.incoming().flatten() {
-            std::thread::spawn(move || serve(stream));
+            let _ = std::thread::Builder::new().name("qs-ipc-conn".into()).spawn(move || serve(stream));
         }
     });
 }
