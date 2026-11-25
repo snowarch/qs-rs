@@ -1043,6 +1043,7 @@ dependencies = [
  "cxx-qt-build",
  "cxx-qt-lib",
  "libc",
+ "qs_dbus",
  "quickshell",
  "quickshell_bluetooth",
  "quickshell_dbusmenu",
@@ -1076,6 +1077,7 @@ dependencies = [
  "cxx-qt",
  "cxx-qt-build",
  "cxx-qt-lib",
+ "libc",
  "quickshell",
  "wayland-backend",
  "wayland-client",
@@ -1115,6 +1117,7 @@ dependencies = [
  "cxx-qt-build",
  "cxx-qt-lib",
  "libc",
+ "notify",
 ]
 
 [[package]]
@@ -1162,7 +1165,6 @@ dependencies = [
  "cxx-qt-build",
  "cxx-qt-lib",
  "libc",
- "notify",
  "quickshell",
 ]
 

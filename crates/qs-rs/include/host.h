@@ -10,8 +10,6 @@
 #include <QtQml/QQmlEngine>
 #include <QtWidgets/QApplication>
 #include <QtCore/QFile>
-#include <QtDBus/QDBusConnection>
-#include <QtDBus/QDBusMessage>
 #include <QtCore/QLibrary>
 #include <QtCore/QVersionNumber>
 #include <QtCore/QLibraryInfo>
@@ -302,16 +300,9 @@ inline std::unique_ptr<QGuiApplication> create_app(const QString& appId, bool us
 	return app;
 }
 
-// Upstream launch.cpp after the application exists: the portal registration, transparent
-// windows, NativeTextRendering, and hidden windows never quit the shell.
-inline void configure_app(const QString& appId, bool nativeTextRendering) {
-	// The first portal call on this connection (see create_app); best effort, like Qt's.
-	if (qEnvironmentVariableIntValue("QT_NO_XDG_DESKTOP_PORTAL") <= 0) {
-		auto msg = QDBusMessage::createMethodCall(
-		    "org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop", "org.freedesktop.host.portal.Registry", "Register");
-		msg.setArguments({appId, QVariantMap()});
-		QDBusConnection::sessionBus().send(msg);
-	}
+// Upstream launch.cpp after the application exists: transparent windows, NativeTextRendering,
+// and hidden windows never quit the shell. Portal registration runs asynchronously on `qs-dbus`.
+inline void configure_app(bool nativeTextRendering) {
 	QQuickWindow::setDefaultAlphaBuffer(true);
 	if (nativeTextRendering) QQuickWindow::setTextRenderType(QQuickWindow::NativeTextRendering);
 	QGuiApplication::setQuitOnLastWindowClosed(false);
@@ -832,8 +823,11 @@ inline QString memory_report(bool reclaimFirst) {
 	return out.join('\n');
 }
 
+void prune_cache() noexcept;
+
 inline void watch_memory_peaks() {
 	if (PeakWatcher::instance == nullptr) PeakWatcher::instance = new PeakWatcher();
+	QTimer::singleShot(120 * 1000, qApp, [] { prune_cache(); });
 }
 
 // After a large teardown (a family switch, a closed Settings let go) the dead tree's compiled components, JS heap and

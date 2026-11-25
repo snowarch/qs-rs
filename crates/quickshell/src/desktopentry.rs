@@ -37,13 +37,15 @@ pub mod ffi {
         /// The application directories to watch, highest priority first.
         fn desktop_paths() -> Vec<String>;
         fn desktop_exec(command: &Vec<String>, working_directory: &str);
+        fn desktop_watch_start(notify_cb: usize);
+        fn desktop_watch_refresh();
     }
 }
 
 use ffi::{DesktopActionData, DesktopEntryData};
-use std::collections::HashMap;
-use std::path::Path;
-use std::sync::OnceLock;
+use std::collections::{BTreeSet, HashMap};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 
 #[derive(Default, Clone, Copy, PartialEq, Debug)]
 struct LocaleRef<'a> {
@@ -410,9 +412,115 @@ fn desktop_exec(command: &Vec<String>, working_directory: &str) {
     });
 }
 
+#[derive(Default)]
+struct WatchFilter {
+    /// Existing `applications` directories and their immediate subdirectories.
+    active_dirs: BTreeSet<PathBuf>,
+    /// Next missing path component under an existing ancestor (so creating `applications/`
+    /// triggers a rescan without reacting to unrelated files in `$HOME` or `/usr/share`).
+    pending_targets: BTreeSet<PathBuf>,
+}
+
+impl WatchFilter {
+    fn matches(&self, paths: &[PathBuf]) -> bool {
+        paths.iter().any(|p| {
+            self.active_dirs.contains(p)
+                || p.parent().is_some_and(|parent| self.active_dirs.contains(parent))
+                || self.pending_targets.contains(p)
+        })
+    }
+}
+
+struct DesktopWatch {
+    roots: Vec<PathBuf>,
+    filter: Arc<Mutex<WatchFilter>>,
+    group: crate::watch::DirGroup,
+}
+
+impl DesktopWatch {
+    fn new(roots: Vec<PathBuf>, on_change: impl Fn() + Send + 'static) -> Option<Self> {
+        let filter = Arc::new(Mutex::new(WatchFilter::default()));
+        let cb_filter = Arc::clone(&filter);
+        let group = crate::watch::DirGroup::new_changes(move |paths| {
+            let hit = cb_filter.lock().unwrap().matches(paths);
+            if hit {
+                on_change();
+            }
+        })?;
+        let mut w = Self { roots, filter, group };
+        w.refresh();
+        Some(w)
+    }
+
+    fn refresh(&mut self) {
+        let mut watch_dirs = BTreeSet::new();
+        let mut active_dirs = BTreeSet::new();
+        let mut pending_targets = BTreeSet::new();
+
+        for root in &self.roots {
+            if root.is_dir() {
+                watch_dirs.insert(root.clone());
+                active_dirs.insert(root.clone());
+                if let Ok(entries) = std::fs::read_dir(root) {
+                    for entry in entries.flatten() {
+                        // `file_type()` does not follow symlinks, matching Qt's QDir::NoSymLinks.
+                        if entry.file_type().is_ok_and(|ft| ft.is_dir()) {
+                            let sub = entry.path();
+                            watch_dirs.insert(sub.clone());
+                            active_dirs.insert(sub);
+                        }
+                    }
+                }
+            } else {
+                // Watch only the nearest existing ancestor and filter strictly for the missing child.
+                let mut target = root.as_path();
+                while let Some(parent) = target.parent() {
+                    if parent.as_os_str().is_empty() {
+                        break;
+                    }
+                    if parent.is_dir() {
+                        watch_dirs.insert(parent.to_path_buf());
+                        pending_targets.insert(target.to_path_buf());
+                        break;
+                    }
+                    target = parent;
+                }
+            }
+        }
+
+        {
+            let mut f = self.filter.lock().unwrap();
+            f.active_dirs = active_dirs;
+            f.pending_targets = pending_targets;
+        }
+        self.group.set_dirs(watch_dirs);
+    }
+}
+
+static DESKTOP_WATCH: Mutex<Option<DesktopWatch>> = Mutex::new(None);
+
+fn desktop_watch_start(notify_cb: usize) {
+    let mut guard = DESKTOP_WATCH.lock().unwrap();
+    if guard.is_some() || notify_cb == 0 {
+        return;
+    }
+    // SAFETY: caller passes `qsrs_desktop_entries_notify`, an `extern "C" fn()` valid for the process lifetime.
+    let notify: extern "C" fn() = unsafe { std::mem::transmute(notify_cb) };
+    let roots = desktop_paths().into_iter().map(PathBuf::from).collect();
+    *guard = DesktopWatch::new(roots, move || notify());
+}
+
+fn desktop_watch_refresh() {
+    if let Some(w) = DESKTOP_WATCH.lock().unwrap().as_mut() {
+        w.refresh();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
 
     #[test]
     fn exec_strings() {
@@ -436,5 +544,54 @@ mod tests {
         assert_eq!((crlf.name.as_str(), crlf.command.len()), ("Win", 1));
         let link = parse_text("x", "[Desktop Entry]\nType=Link\nName=X\n");
         assert!(link.name.is_empty());
+    }
+
+    #[test]
+    fn desktop_watch_tracks_changes_and_missing_dirs() {
+        let base = std::env::temp_dir().join(format!("qsrs-desktop-watch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let apps = base.join("applications");
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let cb_hits = Arc::clone(&hits);
+        let mut watch = DesktopWatch::new(vec![apps.clone()], move || {
+            cb_hits.fetch_add(1, Ordering::SeqCst);
+        })
+        .unwrap();
+
+        let wait_for = |min: usize| {
+            let start = Instant::now();
+            while start.elapsed() < Duration::from_secs(2) {
+                if hits.load(Ordering::SeqCst) >= min {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            false
+        };
+
+        // Unrelated sibling in parent dir must NOT trigger a rescan.
+        std::fs::write(base.join("unrelated.txt"), "noise").unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(hits.load(Ordering::SeqCst), 0);
+
+        // Creating the missing `applications` directory triggers a rescan.
+        std::fs::create_dir(&apps).unwrap();
+        assert!(wait_for(1));
+        watch.refresh();
+
+        // Adding and removing a `.desktop` file inside `applications` triggers rescans.
+        let before = hits.load(Ordering::SeqCst);
+        let entry = apps.join("demo.desktop");
+        std::fs::write(&entry, "[Desktop Entry]\nType=Application\nName=Demo\n").unwrap();
+        assert!(wait_for(before + 1));
+
+        let before = hits.load(Ordering::SeqCst);
+        std::fs::remove_file(&entry).unwrap();
+        assert!(wait_for(before + 1));
+
+        drop(watch);
+        std::fs::remove_dir_all(&base).unwrap();
     }
 }

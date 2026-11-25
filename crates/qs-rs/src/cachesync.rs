@@ -17,8 +17,7 @@ use std::time::Duration;
 const MARKER: &str = ".dirty";
 /// Quiet time after the last skipped flush before the one real sync.
 const SETTLE: Duration = Duration::from_millis(1500);
-/// When the shell has loaded what it loads at start, and how long an unused entry stays.
-const PRUNE_AFTER: Duration = Duration::from_secs(120);
+/// How long an unused QML disk cache entry stays before `spawn_prune` drops it.
 const KEEP: Duration = Duration::from_secs(7 * 24 * 3600);
 
 static DIR: OnceLock<PathBuf> = OnceLock::new();
@@ -57,11 +56,14 @@ pub fn init(dir: PathBuf) {
         }
     }
     let _ = std::fs::create_dir_all(&dir);
-    let _ = DIR.set(dir.clone());
-    let _ = std::thread::Builder::new().name("qs-cacheprune".into()).spawn(move || {
-        std::thread::sleep(PRUNE_AFTER);
-        prune(&dir, KEEP);
-    });
+    let _ = DIR.set(dir);
+}
+
+/// Runs one short-lived thread to bump mtimes of mapped cache entries and drop week-old unused ones.
+/// Triggered by a Qt single-shot timer 120 s after startup so no sleeping thread sits idle at boot.
+pub fn spawn_prune() {
+    let Some(dir) = DIR.get() else { return };
+    let _ = std::thread::Builder::new().name("qs-cacheprune".into()).spawn(move || prune(dir, KEEP));
 }
 
 /// The shell is quitting cleanly: sync what still waits for its quiet time and drop the marker, so a shell that exits

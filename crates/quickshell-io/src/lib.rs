@@ -4,4 +4,4 @@ pub mod ipc;
 pub mod jsonadapter;
 pub mod process;
 pub mod socket;
-pub mod watch;
+pub use quickshell::watch;

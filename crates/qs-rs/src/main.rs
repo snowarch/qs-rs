@@ -357,6 +357,7 @@ fn run_shell(cli: &cli::Cli, config: PathBuf, started: std::time::Instant) -> i3
             return 1;
         }
     };
+    drop(text);
     // Upstream launch.cpp: QS_APP_ID and QS_ICON_THEME are the defaults the pragmas override.
     pragmas.app_id = pragmas.app_id.take().or_else(|| std::env::var("QS_APP_ID").ok().filter(|v| !v.is_empty()));
     pragmas.icon_theme = pragmas.icon_theme.take().or_else(|| std::env::var("QS_ICON_THEME").ok().filter(|v| !v.is_empty()));
@@ -451,7 +452,8 @@ fn run_shell(cli: &cli::Cli, config: PathBuf, started: std::time::Instant) -> i3
     if pragmas.enable_webengine {
         host::ffi::init_webengine();
     }
-    let app_id = QString::from(pragmas.app_id.as_deref().unwrap_or("org.quickshell"));
+    let app_id_str = pragmas.app_id.as_deref().unwrap_or("org.quickshell").to_string();
+    let app_id = QString::from(app_id_str.as_str());
     let mut app = host::ffi::create_app(&app_id, pragmas.use_qapplication, pragmas.desktop_settings_aware);
     if pragmas.enable_webengine {
         host::ffi::init_webengine();
@@ -461,7 +463,23 @@ fn run_shell(cli: &cli::Cli, config: PathBuf, started: std::time::Instant) -> i3
     {
         host::ffi::setup_desktop_icons(&QString::from(theme.as_str()));
     }
-    host::ffi::configure_app(&app_id, pragmas.native_text_rendering);
+    host::ffi::configure_app(pragmas.native_text_rendering);
+    if !check && std::env::var("QT_NO_XDG_DESKTOP_PORTAL").ok().and_then(|v| v.parse::<i32>().ok()).unwrap_or(0) <= 0 {
+        qs_dbus::rt::spawn(async move {
+            if let Ok(conn) = qs_dbus::rt::session().await {
+                let options: std::collections::HashMap<&str, qs_dbus::zbus::zvariant::Value<'_>> = std::collections::HashMap::new();
+                let _ = conn
+                    .call_method(
+                        Some("org.freedesktop.portal.Desktop"),
+                        "/org/freedesktop/portal/desktop",
+                        Some("org.freedesktop.host.portal.Registry"),
+                        "Register",
+                        &(app_id_str.as_str(), options),
+                    )
+                    .await;
+            }
+        });
+    }
     // QML debug server for qmlprofiler/GammaRay before the engine: upstream's `--debug PORT
     // [--waitfordebug]`, or QSRS_QML_DEBUG=PORT[,block].
     let debug = cli.debug_port.map(|p| (p.to_string(), cli.wait_debug)).or_else(|| {
@@ -480,13 +498,15 @@ fn run_shell(cli: &cli::Cli, config: PathBuf, started: std::time::Instant) -> i3
         let _ = std::fs::remove_dir_all(&vfs_root);
         return code;
     }
+    // Release scan intercepts, file sets and dir maps (~1.6 MB on inir) before loading QML.
+    let scan_hashes = scan.into_hashes();
     quickshell::common::set_reload_hook(host::ffi::request_reload);
     quickshell::common::set_watch_files_hook(watchfiles::sync);
     let root = unsafe { host::ffi::create_root(std::pin::Pin::new_unchecked(&mut *engine), &qstr(&entry)) };
     if !root.is_null() {
         let _ = host::SHELL.set((root_file.clone(), vfs.clone()));
         unsafe { host::ffi::install_reload(engine, root, &qstr(&vfs_root), &qstr(&entry)) };
-        watchfiles::track(scan.hashes);
+        watchfiles::track(scan_hashes);
         quickshell::log::emit(quickshell::log::Level::Info, "default", "Configuration Loaded".into());
         let (alloc, resident) = malloc_stats().unwrap_or_default();
         quickshell::qs_log!(

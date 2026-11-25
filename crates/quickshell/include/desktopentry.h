@@ -4,11 +4,11 @@
 // hold the result. The first scan is synchronous like upstream, rescans run on the global
 // thread pool after a 100 ms debounce of directory changes.
 #include <algorithm>
+#include <atomic>
+#include <cstddef>
 
-#include <QtCore/QDir>
-#include <QtCore/QFileInfo>
-#include <QtCore/QFileSystemWatcher>
 #include <QtCore/QHash>
+#include <QtCore/QMetaObject>
 #include <QtCore/QObject>
 #include <QtCore/QThreadPool>
 #include <QtCore/QTimer>
@@ -205,6 +205,12 @@ inline void DesktopAction::execute() const {
 }
 
 // Process-wide, shared by every engine (upstream: DesktopEntryManager::instance()).
+class QsDesktopEntryManager;
+inline std::atomic<QsDesktopEntryManager*> gDesktopEntryManager {nullptr};
+extern "C" {
+static void qsrs_desktop_entries_notify();
+}
+
 class QsDesktopEntryManager: public QObject {
 	Q_OBJECT;
 
@@ -213,6 +219,8 @@ public:
 		static auto* manager = new QsDesktopEntryManager(); // NOLINT
 		return manager;
 	}
+
+	void scheduleRescan() { this->debounce.start(); }
 
 	QsObjectModel* applications() { return &this->mApplications; }
 
@@ -236,26 +244,12 @@ signals:
 
 private:
 	QsDesktopEntryManager() {
+		gDesktopEntryManager.store(this, std::memory_order_release);
 		this->debounce.setSingleShot(true);
 		this->debounce.setInterval(100);
-		QObject::connect(&this->watcher, &QFileSystemWatcher::directoryChanged, &this->debounce, qOverload<>(&QTimer::start));
 		QObject::connect(&this->debounce, &QTimer::timeout, this, &QsDesktopEntryManager::rescan);
-		for (const auto& p: desktop_paths()) this->watch(qsrs::desktop::qstr(p));
+		desktop_watch_start(reinterpret_cast<std::size_t>(&qsrs_desktop_entries_notify));
 		this->apply(qsrs::desktop::scan());
-	}
-
-	// The directory, its subdirectories and its parents (so a created applications dir is seen).
-	void watch(const QString& path) {
-		if (!QDir(path).exists()) return;
-		this->watcher.addPath(path);
-		for (auto p = QFileInfo(path).absolutePath(); !p.isEmpty();) {
-			this->watcher.addPath(p);
-			auto parent = QFileInfo(p).dir().absolutePath();
-			if (parent == p) break;
-			p = parent;
-		}
-		for (const auto& sub: QDir(path).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks))
-			this->watcher.addPath(sub.absoluteFilePath());
 	}
 
 	void rescan() {
@@ -266,6 +260,7 @@ private:
 		this->scanning = true;
 		this->queued = false;
 		QThreadPool::globalInstance()->start([this] {
+			desktop_watch_refresh();
 			auto result = qsrs::desktop::scan();
 			QMetaObject::invokeMethod(this, [this, result = std::move(result)] {
 				this->apply(result);
@@ -320,11 +315,18 @@ private:
 	// Scan order; upstream iterates its QHash, whose order is arbitrary.
 	QList<DesktopEntry*> order;
 	QsObjectModel mApplications {this};
-	QFileSystemWatcher watcher;
 	QTimer debounce;
 	bool scanning = false;
 	bool queued = false;
 };
+
+extern "C" {
+static void qsrs_desktop_entries_notify() {
+	if (auto* m = gDesktopEntryManager.load(std::memory_order_acquire)) {
+		QMetaObject::invokeMethod(m, &QsDesktopEntryManager::scheduleRescan, Qt::QueuedConnection);
+	}
+}
+}
 
 class DesktopEntries: public QObject {
 	Q_OBJECT;

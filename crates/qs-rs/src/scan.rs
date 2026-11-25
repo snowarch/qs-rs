@@ -220,6 +220,11 @@ impl Scan {
         import.canonicalize().ok().filter(|d| d.is_dir())
     }
 
+    /// Consumes the scan, releasing rewritten QML texts and directory maps while keeping file hashes.
+    pub fn into_hashes(self) -> BTreeMap<PathBuf, u64> {
+        self.hashes
+    }
+
     /// Mirror the shell into `vfs`: real dirs for scanned dirs, symlinks for everything else,
     /// synthesized files written in place. Entries that are already right stay untouched (same
     /// path and mtime keep Qt's QML disk cache valid across starts); stale ones are removed.

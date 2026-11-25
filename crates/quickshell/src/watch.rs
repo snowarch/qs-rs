@@ -9,13 +9,15 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 type Callback = Box<dyn Fn() + Send>;
-type SaveCallback = Box<dyn Fn(&[PathBuf]) + Send>;
+type PathsCallback = Box<dyn Fn(&[PathBuf]) + Send>;
 
 /// Subscribers, read by the watcher thread. Never held while calling into the watcher: its
 /// `watch`/`unwatch` wait for that same thread.
 static SUBS: Mutex<Vec<(u64, PathBuf, Callback)>> = Mutex::new(Vec::new());
 /// Whole-directory save subscribers (used by `Quickshell.watchFiles`), sharing the same watcher.
-static SAVE_SUBS: Mutex<Vec<(u64, SaveCallback)>> = Mutex::new(Vec::new());
+static SAVE_SUBS: Mutex<Vec<(u64, PathsCallback)>> = Mutex::new(Vec::new());
+/// Whole-directory change subscribers (create/modify/remove/rename), sharing the same watcher.
+static CHANGE_SUBS: Mutex<Vec<(u64, PathsCallback)>> = Mutex::new(Vec::new());
 
 struct Dirs {
     watcher: RecommendedWatcher,
@@ -40,6 +42,9 @@ fn dirs() -> Option<&'static Mutex<Dirs>> {
             if event.kind.is_access() {
                 return;
             }
+            for (_, cb) in CHANGE_SUBS.lock().unwrap().iter() {
+                cb(&event.paths);
+            }
             for (_, file, cb) in SUBS.lock().unwrap().iter() {
                 if event.paths.iter().any(|p| p == file) {
                     cb();
@@ -56,7 +61,7 @@ fn add_dir(d: &mut Dirs, dir: &Path) -> bool {
     *n += 1;
     if *n == 1 && let Err(e) = d.watcher.watch(dir, RecursiveMode::NonRecursive) {
         d.count.remove(dir);
-        quickshell::qs_log!(warn, "quickshell.io.watch", "cannot watch {}: {e}", dir.display());
+        crate::qs_log!(warn, "quickshell.io.watch", "cannot watch {}: {e}", dir.display());
         return false;
     }
     true
@@ -101,10 +106,17 @@ impl Drop for Subscription {
     }
 }
 
-/// Keeps a dynamic set of directories watched on the shared inotify thread, receiving finished
-/// write / create / rename events for paths inside them.
+#[derive(Clone, Copy)]
+enum GroupKind {
+    Saves,
+    Changes,
+}
+
+/// Keeps a dynamic set of directories watched on the shared inotify thread, receiving either
+/// finished save events (`new`) or all non-access directory change events (`new_changes`).
 pub struct DirGroup {
     id: u64,
+    kind: GroupKind,
     dirs: BTreeSet<PathBuf>,
 }
 
@@ -114,7 +126,15 @@ impl DirGroup {
         let id = d.next;
         d.next += 1;
         SAVE_SUBS.lock().unwrap().push((id, Box::new(cb)));
-        Some(Self { id, dirs: BTreeSet::new() })
+        Some(Self { id, kind: GroupKind::Saves, dirs: BTreeSet::new() })
+    }
+
+    pub fn new_changes(cb: impl Fn(&[PathBuf]) + Send + 'static) -> Option<Self> {
+        let mut d = dirs()?.lock().unwrap();
+        let id = d.next;
+        d.next += 1;
+        CHANGE_SUBS.lock().unwrap().push((id, Box::new(cb)));
+        Some(Self { id, kind: GroupKind::Changes, dirs: BTreeSet::new() })
     }
 
     pub fn set_dirs(&mut self, next: BTreeSet<PathBuf>) {
@@ -138,7 +158,10 @@ impl DirGroup {
 
 impl Drop for DirGroup {
     fn drop(&mut self) {
-        SAVE_SUBS.lock().unwrap().retain(|(id, _)| *id != self.id);
+        match self.kind {
+            GroupKind::Saves => SAVE_SUBS.lock().unwrap().retain(|(id, _)| *id != self.id),
+            GroupKind::Changes => CHANGE_SUBS.lock().unwrap().retain(|(id, _)| *id != self.id),
+        }
         let Some(dirs) = dirs() else { return };
         let mut d = dirs.lock().unwrap();
         for gone in std::mem::take(&mut self.dirs) {
