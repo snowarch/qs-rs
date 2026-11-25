@@ -174,8 +174,9 @@ fn skip(dir: &'static Path) {
 fn syncer(dir: &'static Path) {
     let mut st = STATE.lock().unwrap();
     loop {
-        while !st.dirty {
-            st = WAKE.wait(st).unwrap();
+        if !st.dirty {
+            st.syncer = false;
+            return;
         }
         // Wait until the writes stop, then flush them all with one syncfs.
         let mut seen = st.generation;
@@ -195,6 +196,8 @@ fn syncer(dir: &'static Path) {
         if st.generation == seen {
             let _ = std::fs::remove_file(dir.join(MARKER));
             st.dirty = false;
+            st.syncer = false;
+            return;
         }
     }
 }

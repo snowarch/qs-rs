@@ -41,7 +41,7 @@ unsafe impl Sync for MallocConf {}
 #[unsafe(no_mangle)]
 #[used]
 pub static malloc_conf: MallocConf =
-    MallocConf(c"background_thread:true,narenas:2,dirty_decay_ms:1000,muzzy_decay_ms:0,tcache_max:4096".as_ptr().cast());
+    MallocConf(c"background_thread:true,max_background_threads:1,narenas:2,dirty_decay_ms:1000,muzzy_decay_ms:0,tcache_max:4096".as_ptr().cast());
 
 unsafe extern "C" {
     fn mallctl(name: *const std::ffi::c_char, old: *mut u8, oldlen: *mut usize, new: *mut u8, newlen: usize) -> i32;

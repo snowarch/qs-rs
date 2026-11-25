@@ -1,33 +1,32 @@
 //! `Quickshell.watchFiles`: a change to a file the shell loaded reloads it, like upstream's
-//! generation watcher. Two differences: the directories are watched, so an editor that saves by
-//! replacing the file (a new inode) is seen at every save, not only the first; and a burst of
-//! saves (a git checkout, a formatter over many files) becomes one reload, where upstream reloads
-//! per file and a reload landing on another is how inir's shell used to crash.
+//! generation watcher. Shares the single process-wide inotify watcher in `quickshell_io::watch`
+//! and spawns a short-lived debounce thread only when a watched file is actually saved (zero extra
+//! idle threads at rest).
 
-use notify::event::{AccessKind, AccessMode, EventKind, ModifyKind};
-use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
-use std::sync::mpsc::{self, RecvTimeoutError, Sender};
-use std::sync::Mutex;
-use std::time::Duration;
+use std::sync::{Condvar, Mutex};
+use std::time::{Duration, Instant};
 
 /// Quiet time after the last event before the reload: a save is one close or rename, a checkout
 /// many within a few ms.
 const SETTLE: Duration = Duration::from_millis(60);
 
-struct State {
-    watcher: RecommendedWatcher,
-    dirs: BTreeSet<PathBuf>,
-}
-
-static STATE: Mutex<Option<State>> = Mutex::new(None);
-/// What the current generation was built from; read by the watcher and debounce threads.
+static GROUP: Mutex<Option<quickshell_io::watch::DirGroup>> = Mutex::new(None);
+/// What the current generation was built from; read by the watcher callback and debounce pass.
 static HASHES: Mutex<BTreeMap<PathBuf, u64>> = Mutex::new(BTreeMap::new());
 
+struct Pending {
+    touched: BTreeSet<PathBuf>,
+    deadline: Option<Instant>,
+    running: bool,
+}
+
+static PENDING: Mutex<Pending> = Mutex::new(Pending { touched: BTreeSet::new(), deadline: None, running: false });
+static PENDING_WAKE: Condvar = Condvar::new();
+
 /// Watches the files of a fresh scan (first load and every reload).
-/// When `Quickshell.watchFiles` is off, only the file hashes are kept and no inotify watches or
-/// watcher threads are started until watching is enabled.
+/// When `Quickshell.watchFiles` is off, only the file hashes are kept and no watches are added.
 pub fn track(hashes: BTreeMap<PathBuf, u64>) {
     *HASHES.lock().unwrap() = hashes;
     sync(quickshell::common::watch_files());
@@ -40,78 +39,66 @@ pub fn sync(enabled: bool) {
     } else {
         BTreeSet::new()
     };
-    let mut state = STATE.lock().unwrap();
+    let mut group = GROUP.lock().unwrap();
     if dirs.is_empty() {
-        if let Some(state) = state.as_mut() {
-            for gone in std::mem::take(&mut state.dirs) {
-                let _ = state.watcher.unwatch(&gone);
-            }
+        if let Some(g) = group.as_mut() {
+            g.set_dirs(BTreeSet::new());
         }
         return;
     }
-    if state.is_none() {
-        let Some(watcher) = start() else { return };
-        *state = Some(State { watcher, dirs: BTreeSet::new() });
+    if group.is_none() {
+        let Some(g) = quickshell_io::watch::DirGroup::new(on_saved) else {
+            quickshell::qs_log!(warn, "quickshell.qsrs", "watchFiles: no file watcher available");
+            return;
+        };
+        *group = Some(g);
     }
-    let state = state.as_mut().unwrap();
-    for gone in state.dirs.difference(&dirs) {
-        let _ = state.watcher.unwatch(gone);
-    }
-    for new in dirs.difference(&state.dirs) {
-        if let Err(e) = state.watcher.watch(new, RecursiveMode::NonRecursive) {
-            quickshell::qs_log!(warn, "quickshell.qsrs", "watchFiles: cannot watch {}: {e}", new.display());
-        }
-    }
-    state.dirs = dirs;
+    group.as_mut().unwrap().set_dirs(dirs);
 }
 
-fn start() -> Option<RecommendedWatcher> {
-    let (tx, rx) = mpsc::channel::<PathBuf>();
-    std::thread::Builder::new()
-        .name("qs-watchfiles".into())
-        .spawn(move || {
-            while let Ok(first) = rx.recv() {
-                let mut touched = BTreeSet::from([first]);
-                loop {
-                    match rx.recv_timeout(SETTLE) {
-                        Ok(p) => {
-                            touched.insert(p);
-                        }
-                        Err(RecvTimeoutError::Timeout) => break,
-                        Err(RecvTimeoutError::Disconnected) => return,
-                    }
+fn on_saved(paths: &[PathBuf]) {
+    let matched: Vec<PathBuf> = {
+        let hashes = HASHES.lock().unwrap();
+        paths.iter().filter(|p| hashes.contains_key(*p)).cloned().collect()
+    };
+    if matched.is_empty() {
+        return;
+    }
+    let mut p = PENDING.lock().unwrap();
+    p.touched.extend(matched);
+    p.deadline = Some(Instant::now() + SETTLE);
+    if !p.running {
+        p.running = true;
+        let _ = std::thread::Builder::new().name("qs-watchfiles".into()).spawn(debounce_loop);
+    }
+    PENDING_WAKE.notify_one();
+}
+
+fn debounce_loop() {
+    loop {
+        let touched = {
+            let mut p = PENDING.lock().unwrap();
+            loop {
+                let Some(deadline) = p.deadline else {
+                    p.running = false;
+                    return;
+                };
+                let now = Instant::now();
+                if now >= deadline {
+                    p.deadline = None;
+                    break std::mem::take(&mut p.touched);
                 }
-                if quickshell::common::watch_files() && touched.iter().any(changed) {
-                    quickshell::common::request_reload(false);
-                }
+                p = PENDING_WAKE.wait_timeout(p, deadline - now).unwrap().0;
             }
-        })
-        .ok()?;
-    let watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-        let Ok(event) = res else { return };
-        // A finished write, a file renamed into place or created; plain modify events come
-        // mid-write and the close follows them.
-        let saved = matches!(
-            event.kind,
-            EventKind::Access(AccessKind::Close(AccessMode::Write)) | EventKind::Create(_) | EventKind::Modify(ModifyKind::Name(_))
-        );
-        if saved {
-            forward(&tx, event.paths);
+        };
+        if quickshell::common::watch_files() && touched.iter().any(changed) {
+            quickshell::common::request_reload(false);
         }
-    });
-    match watcher {
-        Ok(w) => Some(w),
-        Err(e) => {
-            quickshell::qs_log!(warn, "quickshell.qsrs", "watchFiles: no file watcher: {e}");
-            None
+        let mut p = PENDING.lock().unwrap();
+        if p.touched.is_empty() && p.deadline.is_none() {
+            p.running = false;
+            return;
         }
-    }
-}
-
-fn forward(tx: &Sender<PathBuf>, paths: Vec<PathBuf>) {
-    let hashes = HASHES.lock().unwrap();
-    for p in paths.into_iter().filter(|p| hashes.contains_key(p)) {
-        let _ = tx.send(p);
     }
 }
 

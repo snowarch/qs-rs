@@ -145,8 +145,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
 
-const MAX_IO_WORKERS: usize = 4;
-const IDLE_WORKER_TIMEOUT: Duration = Duration::from_secs(15);
+const MAX_IO_WORKERS: usize = 2;
+const IDLE_WORKER_TIMEOUT: Duration = Duration::from_secs(3);
 
 type Job = Box<dyn FnOnce() + Send>;
 

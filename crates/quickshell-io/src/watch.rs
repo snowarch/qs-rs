@@ -2,16 +2,20 @@
 //! watches its parent directory (so creation and atomic replacement are seen too) and calls the
 //! subscriber for every non-access event that names the file.
 
+use notify::event::{AccessKind, AccessMode, EventKind, ModifyKind};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 type Callback = Box<dyn Fn() + Send>;
+type SaveCallback = Box<dyn Fn(&[PathBuf]) + Send>;
 
 /// Subscribers, read by the watcher thread. Never held while calling into the watcher: its
 /// `watch`/`unwatch` wait for that same thread.
 static SUBS: Mutex<Vec<(u64, PathBuf, Callback)>> = Mutex::new(Vec::new());
+/// Whole-directory save subscribers (used by `Quickshell.watchFiles`), sharing the same watcher.
+static SAVE_SUBS: Mutex<Vec<(u64, SaveCallback)>> = Mutex::new(Vec::new());
 
 struct Dirs {
     watcher: RecommendedWatcher,
@@ -24,6 +28,15 @@ fn dirs() -> Option<&'static Mutex<Dirs>> {
     DIRS.get_or_init(|| {
         let watcher = notify::recommended_watcher(|res: notify::Result<notify::Event>| {
             let Ok(event) = res else { return };
+            let saved = matches!(
+                event.kind,
+                EventKind::Access(AccessKind::Close(AccessMode::Write)) | EventKind::Create(_) | EventKind::Modify(ModifyKind::Name(_))
+            );
+            if saved {
+                for (_, cb) in SAVE_SUBS.lock().unwrap().iter() {
+                    cb(&event.paths);
+                }
+            }
             if event.kind.is_access() {
                 return;
             }
@@ -38,6 +51,27 @@ fn dirs() -> Option<&'static Mutex<Dirs>> {
     .as_ref()
 }
 
+fn add_dir(d: &mut Dirs, dir: &Path) -> bool {
+    let n = d.count.entry(dir.to_path_buf()).or_insert(0);
+    *n += 1;
+    if *n == 1 && let Err(e) = d.watcher.watch(dir, RecursiveMode::NonRecursive) {
+        d.count.remove(dir);
+        quickshell::qs_log!(warn, "quickshell.io.watch", "cannot watch {}: {e}", dir.display());
+        return false;
+    }
+    true
+}
+
+fn remove_dir(d: &mut Dirs, dir: &Path) {
+    if let Some(n) = d.count.get_mut(dir) {
+        *n -= 1;
+        if *n == 0 {
+            d.count.remove(dir);
+            let _ = d.watcher.unwatch(dir);
+        }
+    }
+}
+
 /// Keeps a subscription alive; dropping it unsubscribes.
 pub struct Subscription {
     id: u64,
@@ -50,10 +84,7 @@ pub fn subscribe(file: &Path, cb: impl Fn() + Send + 'static) -> Option<Subscrip
     let mut d = dirs()?.lock().unwrap();
     let id = d.next;
     d.next += 1;
-    let n = d.count.entry(dir.clone()).or_insert(0);
-    *n += 1;
-    if *n == 1 && d.watcher.watch(&dir, RecursiveMode::NonRecursive).is_err() {
-        d.count.remove(&dir);
+    if !add_dir(&mut d, &dir) {
         return None;
     }
     SUBS.lock().unwrap().push((id, file.to_path_buf(), Box::new(cb)));
@@ -66,12 +97,52 @@ impl Drop for Subscription {
         SUBS.lock().unwrap().retain(|(id, ..)| *id != self.id);
         let Some(dirs) = dirs() else { return };
         let mut d = dirs.lock().unwrap();
-        if let Some(n) = d.count.get_mut(&self.dir) {
-            *n -= 1;
-            if *n == 0 {
-                d.count.remove(&self.dir);
-                let _ = d.watcher.unwatch(&self.dir);
+        remove_dir(&mut d, &self.dir);
+    }
+}
+
+/// Keeps a dynamic set of directories watched on the shared inotify thread, receiving finished
+/// write / create / rename events for paths inside them.
+pub struct DirGroup {
+    id: u64,
+    dirs: BTreeSet<PathBuf>,
+}
+
+impl DirGroup {
+    pub fn new(cb: impl Fn(&[PathBuf]) + Send + 'static) -> Option<Self> {
+        let mut d = dirs()?.lock().unwrap();
+        let id = d.next;
+        d.next += 1;
+        SAVE_SUBS.lock().unwrap().push((id, Box::new(cb)));
+        Some(Self { id, dirs: BTreeSet::new() })
+    }
+
+    pub fn set_dirs(&mut self, next: BTreeSet<PathBuf>) {
+        let Some(dirs) = dirs() else { return };
+        let mut d = dirs.lock().unwrap();
+        for gone in self.dirs.difference(&next) {
+            remove_dir(&mut d, gone);
+        }
+        let mut active = BTreeSet::new();
+        for keep in self.dirs.intersection(&next) {
+            active.insert(keep.clone());
+        }
+        for new in next.difference(&self.dirs) {
+            if add_dir(&mut d, new) {
+                active.insert(new.clone());
             }
+        }
+        self.dirs = active;
+    }
+}
+
+impl Drop for DirGroup {
+    fn drop(&mut self) {
+        SAVE_SUBS.lock().unwrap().retain(|(id, _)| *id != self.id);
+        let Some(dirs) = dirs() else { return };
+        let mut d = dirs.lock().unwrap();
+        for gone in std::mem::take(&mut self.dirs) {
+            remove_dir(&mut d, &gone);
         }
     }
 }
