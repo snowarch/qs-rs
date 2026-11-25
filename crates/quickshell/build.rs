@@ -45,7 +45,7 @@ fn main() {
     .cpp_file("include/desktopentry.h")
     .cpp_file("include/springvalue.h")
     .cpp_file("include/fieldregion.h")
-    .files(["src/global.rs", "src/util.rs", "src/colorquantizer.rs", "src/desktopentry.rs", "src/fieldregion.rs", "src/errorlog.rs", "src/log.rs"])
+    .files(["src/global.rs", "src/util.rs", "src/colorquantizer.rs", "src/desktopentry.rs", "src/fieldregion.rs", "src/spring.rs", "src/errorlog.rs", "src/log.rs"])
     .build()
     .export();
 }

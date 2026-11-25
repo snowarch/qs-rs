@@ -9,6 +9,7 @@ pub mod icons;
 pub mod instance;
 pub mod log;
 pub mod proc;
+pub mod spring;
 pub mod util;
 
 /// Bumped when a reload puts a new tree in place: what registers after it belongs to the new generation.
