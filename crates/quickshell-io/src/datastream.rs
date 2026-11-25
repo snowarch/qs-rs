@@ -75,25 +75,46 @@ impl qobject::StdioCollector {
     }
 }
 
-/// Splits `buffer + incoming` on `marker`, leaving the unterminated tail in `buffer`.
-pub fn split(marker: &[u8], buffer: &mut Vec<u8>, incoming: &[u8]) -> Vec<Vec<u8>> {
+/// Calls `emit` for every segment in `buffer + incoming` terminated by `marker`, leaving the
+/// unterminated tail in `buffer` with zero intermediate per-line `Vec` allocations.
+pub fn split_each(marker: &[u8], buffer: &mut Vec<u8>, incoming: &[u8], mut emit: impl FnMut(&[u8])) {
     buffer.extend_from_slice(incoming);
     if marker.is_empty() {
-        return if buffer.is_empty() { vec![] } else { vec![std::mem::take(buffer)] };
+        if !buffer.is_empty() {
+            emit(buffer.as_slice());
+            buffer.clear();
+        }
+        return;
     }
-    let mut out = Vec::new();
     let mut start = 0;
-    let mut i = 0;
-    while i + marker.len() <= buffer.len() {
-        if &buffer[i..i + marker.len()] == marker {
-            out.push(buffer[start..i].to_vec());
-            i += marker.len();
-            start = i;
-        } else {
-            i += 1;
+    if marker.len() == 1 {
+        let needle = marker[0];
+        while let Some(rel) = buffer[start..].iter().position(|&b| b == needle) {
+            let end = start + rel;
+            emit(&buffer[start..end]);
+            start = end + 1;
+        }
+    } else {
+        let mlen = marker.len();
+        while start + mlen <= buffer.len() {
+            if let Some(rel) = buffer[start..].windows(mlen).position(|w| w == marker) {
+                let end = start + rel;
+                emit(&buffer[start..end]);
+                start = end + mlen;
+            } else {
+                break;
+            }
         }
     }
-    buffer.drain(..start);
+    if start > 0 {
+        buffer.drain(..start);
+    }
+}
+
+/// Splits `buffer + incoming` on `marker`, leaving the unterminated tail in `buffer`.
+pub fn split(marker: &[u8], buffer: &mut Vec<u8>, incoming: &[u8]) -> Vec<Vec<u8>> {
+    let mut out = Vec::new();
+    split_each(marker, buffer, incoming, |part| out.push(part.to_vec()));
     out
 }
 
@@ -119,10 +140,10 @@ impl Parser<'_> {
     pub fn feed(self, buffer: &mut Vec<u8>, incoming: &[u8]) {
         match self {
             Parser::Split(mut p) => {
-                let marker = p.split_marker().to_string().into_bytes();
-                for part in split(&marker, buffer, incoming) {
-                    p.as_mut().read(QString::from(&*String::from_utf8_lossy(&part)));
-                }
+                let marker = p.split_marker().to_string();
+                split_each(marker.as_bytes(), buffer, incoming, |part| {
+                    p.as_mut().read(QString::from(&*String::from_utf8_lossy(part)));
+                });
             }
             Parser::Collector(mut p) => {
                 buffer.extend_from_slice(incoming);
@@ -140,16 +161,18 @@ impl Parser<'_> {
                 if !buffer.is_empty() {
                     p.as_mut().read(QString::from(&*String::from_utf8_lossy(buffer)));
                 }
+                buffer.clear();
             }
             Parser::Collector(mut p) => {
                 if *p.wait_for_end() {
-                    p.as_mut().rust_mut().data = buffer.clone();
+                    p.as_mut().rust_mut().data = std::mem::take(buffer);
                     p.as_mut().data_changed();
+                } else {
+                    buffer.clear();
                 }
                 p.as_mut().stream_finished();
             }
         }
-        buffer.clear();
     }
 }
 

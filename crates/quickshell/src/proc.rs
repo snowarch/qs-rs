@@ -47,23 +47,46 @@ impl Drop for Stdin {
     }
 }
 
+#[inline]
+fn is_executable(p: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    p.metadata().is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
+fn path_cache() -> &'static Mutex<HashMap<(String, String), std::path::PathBuf>> {
+    static CACHE: OnceLock<Mutex<HashMap<(String, String), std::path::PathBuf>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
 // A bare name is looked up here, in the child's own PATH (where execvp would look). Handed a name
 // to search with PATH in the environment, std gives up posix_spawn for fork + exec: the fork copies
 // the shell's page tables and the Qt thread then waits for the exec, ~20 ms a spawn (iRiS Settings
 // starts seven on open: 140 ms before it moved). QProcess upstream never forks the whole process.
 fn resolve(program: &str, env: &[(String, String)]) -> Option<std::path::PathBuf> {
-    use std::os::unix::fs::PermissionsExt;
     if program.contains('/') {
         return None;
     }
     let path = &env.iter().find(|(k, _)| k == "PATH")?.1;
+    // Fast path: check cached location with a single stat (validates binary still exists & is +x).
+    if let Ok(cache) = path_cache().lock()
+        && let Some(hit) = cache.get(&(path.clone(), program.to_string()))
+        && is_executable(hit)
+    {
+        return Some(hit.clone());
+    }
     for dir in path.split(':').map(std::path::Path::new) {
         // A relative entry is the child's working directory: std's own search keeps that right.
         if !dir.is_absolute() {
             return None;
         }
         let p = dir.join(program);
-        if p.metadata().is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0) {
+        if is_executable(&p) {
+            if let Ok(mut cache) = path_cache().lock() {
+                if cache.len() >= 256 {
+                    cache.clear();
+                }
+                cache.insert((path.clone(), program.to_string()), p.clone());
+            }
             return Some(p);
         }
     }
@@ -73,20 +96,26 @@ fn resolve(program: &str, env: &[(String, String)]) -> Option<std::path::PathBuf
 fn command(ctx: &Context) -> Command {
     use std::os::unix::process::CommandExt;
     let initial = crate::common::initial_env();
-    let mut env: Vec<(String, String)> = if ctx.clear_environment { Vec::new() } else { initial.to_vec() };
-    for (name, value) in &ctx.environment {
-        env.retain(|(k, _)| k != name);
-        match value {
-            Some(v) => env.push((name.clone(), v.clone())),
-            None if ctx.clear_environment => {
-                if let Some(kv) = initial.iter().find(|(k, _)| k == name) {
-                    env.push(kv.clone());
+    let owned_env: Option<Vec<(String, String)>> = if ctx.environment.is_empty() && !ctx.clear_environment {
+        None
+    } else {
+        let mut env: Vec<(String, String)> = if ctx.clear_environment { Vec::new() } else { initial.to_vec() };
+        for (name, value) in &ctx.environment {
+            env.retain(|(k, _)| k != name);
+            match value {
+                Some(v) => env.push((name.clone(), v.clone())),
+                None if ctx.clear_environment => {
+                    if let Some(kv) = initial.iter().find(|(k, _)| k == name) {
+                        env.push(kv.clone());
+                    }
                 }
+                None => {}
             }
-            None => {}
         }
-    }
-    let mut cmd = match resolve(&ctx.command[0], &env) {
+        Some(env)
+    };
+    let env_slice: &[(String, String)] = owned_env.as_deref().unwrap_or(initial);
+    let mut cmd = match resolve(&ctx.command[0], env_slice) {
         Some(path) => {
             let mut cmd = Command::new(path);
             cmd.arg0(&ctx.command[0]);
@@ -99,7 +128,7 @@ fn command(ctx: &Context) -> Command {
         cmd.current_dir(&ctx.working_directory);
     }
     cmd.env_clear();
-    cmd.envs(env);
+    cmd.envs(env_slice.iter().map(|(k, v)| (k.as_str(), v.as_str())));
     cmd
 }
 
@@ -201,9 +230,8 @@ impl Reactor {
     }
 }
 
-/// Reads what `fd` has now. Returns false once it reached EOF or failed.
-fn drain(fd: &OwnedFd, wrap: fn(Vec<u8>) -> Event, emit: &Option<Emit>, once: bool) -> bool {
-    let mut buf = [0u8; 64 * 1024];
+/// Reads what `fd` has now into `buf`. Returns false once it reached EOF or failed.
+fn drain(fd: &OwnedFd, buf: &mut [u8], wrap: fn(Vec<u8>) -> Event, emit: &Option<Emit>, once: bool) -> bool {
     loop {
         let n = unsafe { libc::read(fd.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len()) };
         if n > 0 {
@@ -228,6 +256,7 @@ fn run() {
     let mut procs: HashMap<u64, Child_> = HashMap::new();
     let mut fds: Vec<libc::pollfd> = Vec::new();
     let mut slots: Vec<(u64, u8)> = Vec::new(); // (child id, 0 pidfd / 1 out / 2 err / 3 in)
+    let mut read_buf = vec![0u8; 64 * 1024];
     loop {
         for cmd in std::mem::take(&mut *r.cmds.lock().unwrap()) {
             match cmd {
@@ -281,8 +310,8 @@ fn run() {
             let Some(c) = procs.get_mut(&id) else { continue };
             match slot {
                 0 => exited.push(id),
-                1 if !c.out.as_ref().is_some_and(|f| drain(f, Event::Stdout, &c.emit, true)) => c.out = None,
-                2 if !c.err.as_ref().is_some_and(|f| drain(f, Event::Stderr, &c.emit, true)) => c.err = None,
+                1 if !c.out.as_ref().is_some_and(|f| drain(f, &mut read_buf, Event::Stdout, &c.emit, true)) => c.out = None,
+                2 if !c.err.as_ref().is_some_and(|f| drain(f, &mut read_buf, Event::Stderr, &c.emit, true)) => c.err = None,
                 3 => {
                     let fd = c.inp.as_ref().unwrap().as_raw_fd();
                     let n = unsafe { libc::write(fd, c.pending.as_ptr().cast(), c.pending.len()) };
@@ -300,7 +329,7 @@ fn run() {
             let Some(mut c) = procs.remove(&id) else { continue };
             for (fd, wrap) in [(&c.out, Event::Stdout as fn(Vec<u8>) -> Event), (&c.err, Event::Stderr)] {
                 if let Some(fd) = fd {
-                    drain(fd, wrap, &c.emit, false);
+                    drain(fd, &mut read_buf, wrap, &c.emit, false);
                 }
             }
             use std::os::unix::process::ExitStatusExt;
