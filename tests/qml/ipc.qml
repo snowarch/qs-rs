@@ -54,7 +54,26 @@ ShellRoot {
         probe.running = true
     }
 
-    Component.onCompleted: run(["call", "test", "greet", "bob", "3", "true"], (code, out) => {
+    // Ipc.call (feature "ipc-call"): the same handler, called in this process; it runs on a later
+    // turn of the event loop, never inside the caller.
+    Timer {
+        id: later
+        interval: 50
+        onTriggered: {
+            root.check("local.call", root.got === "eve2true")
+            root.got = ""
+            root.remote()
+        }
+    }
+
+    Component.onCompleted: {
+        check("local.feature", Quickshell.hasVersion(0, 3, ["ipc-call"]))
+        check("local.missing", Ipc.call("nobody", "greet", []) === false)
+        check("local.queued", Ipc.call("test", "greet", ["eve", "2", "true"]) === true && root.got === "")
+        later.start()
+    }
+
+    function remote() { run(["call", "test", "greet", "bob", "3", "true"], (code, out) => {
         check("call", code === 0 && out.trim() === "hi bob" && root.got === "bob3true")
         run(["call", "test", "greet", "bob", "x", "true"], (code2, out2, err2) => {
             check("badint", code2 !== 0 && err2.indexOf("Unable to parse argument 2 as int") >= 0)
@@ -63,5 +82,5 @@ ShellRoot {
                 upstream()
             })
         })
-    })
+    }) }
 }

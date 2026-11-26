@@ -103,7 +103,9 @@ pub const COMPAT_VERSION: (i32, i32) = (0, 3);
 /// captured over ext-image-copy-capture where the compositor offers it (Umbriel), and
 /// ToplevelManager.canCaptureWindows, the compositor's answer to whether windows can be captured.
 /// "field-corners": FieldRegion.cornerRadii, a radius per corner of every body.
-pub const FEATURES: &[&str] = &["webengine", "screencopy-luminance", "toplevel-capture", "niri-window-capture", "native-spring", "screencopy-source-rect", "field-region", "field-corners", "toplevel-image-copy"];
+/// "ipc-call": the Quickshell.Io `Ipc` singleton; `Ipc.call(target, function, args)` runs an
+/// IpcHandler function in the shell's own process.
+pub const FEATURES: &[&str] = &["webengine", "screencopy-luminance", "toplevel-capture", "niri-window-capture", "native-spring", "screencopy-source-rect", "field-region", "field-corners", "toplevel-image-copy", "ipc-call"];
 
 #[derive(Default)]
 pub struct QuickshellGlobalRust {}

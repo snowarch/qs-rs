@@ -46,6 +46,18 @@ pub mod qobject {
         fn signal_fired(self: &IpcHandler, name: &QString, value: &QVariant, is_void: bool);
     }
 
+    extern "RustQt" {
+        /// `Ipc.call(target, function, args)`: runs an IpcHandler function of this shell, as
+        /// `qs ipc call` does from outside, with no process and no socket (feature "ipc-call").
+        #[qobject]
+        #[qml_element]
+        #[qml_singleton]
+        type Ipc = super::IpcRust;
+
+        #[qinvokable]
+        fn call(self: &Ipc, target: &QString, function: &QString, args: &QStringList) -> bool;
+    }
+
     impl cxx_qt::Threading for IpcHandler {}
 }
 
@@ -143,6 +155,35 @@ impl qobject::IpcHandler {
             }
         }
         self.as_mut().rust_mut().registered = Some(target);
+    }
+}
+
+#[derive(Default)]
+pub struct IpcRust;
+
+impl qobject::Ipc {
+    /// Queues the call on the handler's thread, after the caller's handler returns, and holds
+    /// when the target exists. A function the target lacks or a wrong argument logs a warning.
+    fn call(&self, target: &QString, function: &QString, args: &QStringList) -> bool {
+        let target = target.to_string();
+        let Some(thread) = handler_thread(&target) else {
+            return false;
+        };
+        let function = function.to_string();
+        let args: Vec<String> = args.iter().map(|arg| arg.to_string()).collect();
+        thread
+            .queue(move |handler| {
+                let list: QStringList = args.iter().map(|arg| QString::from(arg.as_str())).collect();
+                let mut out = QString::default();
+                let problem = match qobject::ipc_call(handler, &QString::from(&function), &list, &mut out) {
+                    0 => return,
+                    -1 => "no such function".to_owned(),
+                    -2 => format!("{} argument(s) do not fit", args.len()),
+                    n => format!("argument {n} has the wrong type"),
+                };
+                quickshell::qs_log!(warn, "quickshell.ipc", "Ipc.call {target} {function}: {problem}");
+            })
+            .is_ok()
     }
 }
 
