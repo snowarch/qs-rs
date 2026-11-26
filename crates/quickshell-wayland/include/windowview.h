@@ -338,11 +338,11 @@ private:
 		return opacity;
 	}
 
-	// The opacity the window is drawn at. The hole clears the surface by the item's opacity e, so where the shell
-	// draws something opaque beneath the item the window must go in whole (what is left of the shell's pixels over
-	// it makes the blend); drawn at e it would let the desktop through by (1 - e) twice over. What lies beneath is
-	// taken as opaque and faded by the opacity the whole window shares (its window-wide ancestors, a fade in or
-	// out): e / (1 - (1 - e) * shared), which is e while the window fades with its surface and 1 while it stands.
+	// The opacity the window is drawn at, so that it shows at the item's opacity e. The hole clears the surface by
+	// e, so what the shell draws beneath the item keeps (1 - e) of its alpha over the window; drawn at e the window
+	// would let the desktop through by (1 - e) twice over. What lies beneath is taken as opaque and faded by the
+	// opacity the whole window shares (its window-wide ancestors, a fade in or out), so the shell leaves
+	// 1 - (1 - e) * shared of the window in sight, and e over that shows it at e: 1 while the window stands.
 	[[nodiscard]] qreal drawnOpacity(qreal e) const {
 		if (e >= 1 || this->mWindow == nullptr) return e;
 		const QSizeF size = this->mWindow->size();
