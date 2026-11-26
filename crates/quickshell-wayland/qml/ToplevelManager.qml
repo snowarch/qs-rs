@@ -11,6 +11,9 @@ QtObject {
     // qs-rs only (hasVersion feature "toplevel-image-copy"): whether ScreencopyView can capture a
     // window on this compositor (its ext-image-copy-capture globals, or niri's ScreenCast).
     readonly property bool canCaptureWindows: QsWindowCaptureSupport.available
+    // qs-rs only (hasVersion feature "rin-window-view"): whether WindowView can show windows here
+    // (the compositor offers rin-window-view-v1: Rin).
+    readonly property bool canViewWindows: QsWindowViewSupport.available
 
     property Toplevel _active: null
     property var _byKey: ({})

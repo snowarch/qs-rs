@@ -1,0 +1,133 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="rin_window_view_v1">
+  <copyright>
+    Copyright (C) 2026 The Rin authors
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the "Software"),
+    to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense,
+    and/or sell copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice (including the next
+    paragraph) shall be included in all copies or substantial portions of the
+    Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+    DEALINGS IN THE SOFTWARE.
+  </copyright>
+
+  <interface name="rin_window_view_manager_v1" version="1">
+    <description summary="live views of toplevel windows">
+      A privileged client shows other clients' toplevel windows inside one of
+      its own surfaces. The compositor draws each window's current content
+      itself, so a view is as live as the window and costs no copy.
+
+      Views are drawn directly above the surface they belong to, including
+      its subsurfaces, in ascending order. A view of negative order is drawn
+      beneath the surface instead, over what the compositor draws behind it
+      (its background effect): the client's own content covers it, so the
+      client leaves the pixels where the window shows transparent and draws
+      over them what goes over the window. Views take no input.
+    </description>
+
+    <enum name="error">
+      <entry name="not_a_root" value="0"
+             summary="the surface is a subsurface"/>
+    </enum>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the window view manager">
+        Existing views are not affected.
+      </description>
+    </request>
+
+    <request name="get_window_view">
+      <description summary="show a window inside a surface">
+        Creates a view of the toplevel whose ext_foreign_toplevel_handle_v1
+        identifier is window, inside a surface that is not a subsurface. A
+        view of a window that does not exist, or no longer exists, shows
+        nothing.
+
+        The view shows nothing until a destination has been committed.
+      </description>
+      <arg name="id" type="new_id" interface="rin_window_view_v1"/>
+      <arg name="surface" type="object" interface="wl_surface"/>
+      <arg name="window" type="string"
+           summary="the ext_foreign_toplevel_handle_v1 identifier"/>
+    </request>
+  </interface>
+
+  <interface name="rin_window_view_v1" version="1">
+    <description summary="one live window inside a surface">
+      Every state below is double-buffered and applied on the next commit of
+      the surface the view belongs to, together with that surface's content.
+
+      When the surface is destroyed, the view becomes inert.
+    </description>
+
+    <enum name="error">
+      <entry name="invalid_destination" value="0"
+             summary="the destination is not larger than zero"/>
+      <entry name="invalid_clip" value="1"
+             summary="the clip has a negative size or radius"/>
+      <entry name="invalid_opacity" value="2"
+             summary="the opacity is outside 0 to 1"/>
+    </enum>
+
+    <request name="destroy" type="destructor">
+      <description summary="stop showing the window">
+        The view disappears with the next commit of its surface.
+      </description>
+    </request>
+
+    <request name="set_destination">
+      <description summary="where the window appears">
+        The window's geometry, as set by xdg_surface.set_window_geometry or
+        its X11 frame, is scaled into this rectangle, in the surface's
+        logical coordinates. Nothing outside the geometry is shown.
+      </description>
+      <arg name="x" type="fixed"/>
+      <arg name="y" type="fixed"/>
+      <arg name="width" type="fixed"/>
+      <arg name="height" type="fixed"/>
+    </request>
+
+    <request name="set_clip">
+      <description summary="the rounded rectangle the view stays inside">
+        In the surface's logical coordinates, with one radius per corner. A
+        clip with zero width and zero height removes it.
+      </description>
+      <arg name="x" type="fixed"/>
+      <arg name="y" type="fixed"/>
+      <arg name="width" type="fixed"/>
+      <arg name="height" type="fixed"/>
+      <arg name="top_left" type="fixed"/>
+      <arg name="top_right" type="fixed"/>
+      <arg name="bottom_right" type="fixed"/>
+      <arg name="bottom_left" type="fixed"/>
+    </request>
+
+    <request name="set_opacity">
+      <description summary="how opaque the view is">
+        From 0 to 1. The initial opacity is 1.
+      </description>
+      <arg name="opacity" type="fixed"/>
+    </request>
+
+    <request name="set_order">
+      <description summary="where the view stands among its siblings">
+        Views of one surface are drawn in ascending order; views of equal
+        order in the order they were created. A negative order puts the view
+        beneath the surface. The initial order is 0.
+      </description>
+      <arg name="order" type="int"/>
+    </request>
+  </interface>
+</protocol>

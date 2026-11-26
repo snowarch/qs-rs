@@ -102,10 +102,12 @@ pub const COMPAT_VERSION: (i32, i32) = (0, 3);
 /// "toplevel-image-copy": ScreencopyView.toplevelId (a window's ext-foreign-toplevel identifier),
 /// captured over ext-image-copy-capture where the compositor offers it (Umbriel), and
 /// ToplevelManager.canCaptureWindows, the compositor's answer to whether windows can be captured.
+/// "rin-window-view": WindowView, a window shown live inside the shell's surface by the compositor
+/// itself (Rin's rin-window-view-v1, no copy), and ToplevelManager.canViewWindows.
 /// "field-corners": FieldRegion.cornerRadii, a radius per corner of every body.
 /// "ipc-call": the Quickshell.Io `Ipc` singleton; `Ipc.call(target, function, args)` runs an
 /// IpcHandler function in the shell's own process.
-pub const FEATURES: &[&str] = &["webengine", "screencopy-luminance", "toplevel-capture", "niri-window-capture", "native-spring", "screencopy-source-rect", "field-region", "field-corners", "toplevel-image-copy", "ipc-call"];
+pub const FEATURES: &[&str] = &["webengine", "screencopy-luminance", "toplevel-capture", "niri-window-capture", "native-spring", "screencopy-source-rect", "field-region", "field-corners", "toplevel-image-copy", "ipc-call", "rin-window-view"];
 
 #[derive(Default)]
 pub struct QuickshellGlobalRust {}
