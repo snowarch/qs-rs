@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="rin_glass_shape_v1">
+  <copyright>
+    Copyright (C) 2026 The Rin authors
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the "Software"),
+    to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense,
+    and/or sell copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice (including the next
+    paragraph) shall be included in all copies or substantial portions of the
+    Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+    DEALINGS IN THE SOFTWARE.
+  </copyright>
+
+  <interface name="rin_glass_shape_manager_v1" version="1">
+    <description summary="exact glass shapes for background effects">
+      A client that draws its surfaces as one signed-distance field (rounded
+      bodies joined by smooth unions, optionally inside a frame band) gives
+      the compositor that field, so the compositor's blur and lens follow the
+      client's own silhouette exactly instead of a region of rectangles.
+
+      The shape only shapes a background effect: the surface also needs an
+      ext_background_effect_surface_v1 blur region, which switches the effect
+      on and stays the fallback where the compositor cannot use the shape.
+    </description>
+
+    <enum name="error">
+      <entry name="already_constructed" value="0"
+        summary="the surface already has a rin_glass_shape_v1 object"/>
+    </enum>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the manager">
+        Existing rin_glass_shape_v1 objects stay valid.
+      </description>
+    </request>
+
+    <request name="get_glass_shape">
+      <description summary="get the glass shape object of a surface">
+        Create the glass shape object of a surface. A surface has at most one.
+      </description>
+      <arg name="id" type="new_id" interface="rin_glass_shape_v1"/>
+      <arg name="surface" type="object" interface="wl_surface"/>
+    </request>
+  </interface>
+
+  <interface name="rin_glass_shape_v1" version="1">
+    <description summary="the glass shape of one surface">
+      The shape is double-buffered state, applied on the next
+      wl_surface.commit. Destroying the object unsets the shape on the next
+      commit.
+    </description>
+
+    <enum name="error">
+      <entry name="invalid_field" value="0"
+        summary="the field array does not follow the layout"/>
+    </enum>
+
+    <request name="destroy" type="destructor">
+      <description summary="unset the shape and destroy the object"/>
+    </request>
+
+    <request name="set_field">
+      <description summary="set the signed-distance field of the surface">
+        The array holds native-endian 32-bit floats. An empty array unsets
+        the shape.
+
+        It starts with 14 numbers: origin x, origin y, scale, width, height,
+        framed (0 or 1), joins frame (0 or 1), band, corner, wave left, wave
+        top, wave right, wave bottom, wave clock. A point of the field at
+        (fx, fy) is at origin + scale * (fx, fy) in surface-local logical
+        coordinates. Width and height are the field's own size.
+
+        11 numbers follow for each body: x, y, width, height, the corner
+        radii (top left, top right, bottom right, bottom left), fuse, first
+        join and second join. A join is 0 for none, -1 for the frame and n
+        for the body at n - 1. A body joined to another melts into it by a
+        polynomial smooth union of width fuse. A body's corners are quartic
+        superellipses over 1.8409 times the radius.
+
+        When framed, the frame is the outside of the rounded box inset by
+        band, with corner radius corner; its inner line swells by wave on
+        each side, with phase wave clock. The compositor uses at most 24
+        bodies.
+      </description>
+      <arg name="field" type="array"/>
+    </request>
+  </interface>
+</protocol>

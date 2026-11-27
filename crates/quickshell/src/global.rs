@@ -105,9 +105,11 @@ pub const COMPAT_VERSION: (i32, i32) = (0, 3);
 /// "rin-window-view": WindowView, a window shown live inside the shell's surface by the compositor
 /// itself (Rin's rin-window-view-v1, no copy), and ToplevelManager.canViewWindows.
 /// "field-corners": FieldRegion.cornerRadii, a radius per corner of every body.
+/// "glass-shape": a blur region that is a FieldRegion also goes to Rin as the field itself, over
+/// rin-glass-shape-v1, so compositor glass draws the shell's own signed-distance shape.
 /// "ipc-call": the Quickshell.Io `Ipc` singleton; `Ipc.call(target, function, args)` runs an
 /// IpcHandler function in the shell's own process.
-pub const FEATURES: &[&str] = &["webengine", "screencopy-luminance", "toplevel-capture", "niri-window-capture", "native-spring", "screencopy-source-rect", "field-region", "field-corners", "toplevel-image-copy", "ipc-call", "rin-window-view"];
+pub const FEATURES: &[&str] = &["webengine", "screencopy-luminance", "toplevel-capture", "niri-window-capture", "native-spring", "screencopy-source-rect", "field-region", "field-corners", "toplevel-image-copy", "ipc-call", "rin-window-view", "glass-shape"];
 
 #[derive(Default)]
 pub struct QuickshellGlobalRust {}

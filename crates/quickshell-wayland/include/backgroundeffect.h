@@ -1,7 +1,8 @@
 #pragma once
 // `BackgroundEffect` attached type (upstream wayland/background_effect): asks the compositor to
 // blur what is behind a window through ext-background-effect-v1. The region is set in window
-// coordinates, scaled like the surface, and sent right before a frame so it commits with it.
+// coordinates, scaled like the surface, and sent right before a frame so it commits with it. On Rin a FieldRegion
+// also sends its field (rin-glass-shape-v1), so Rin's glass and lens follow the field itself, not the region's pixels.
 #include <QtCore/QHash>
 #include <QtCore/QObject>
 #include <QtCore/QPointer>
@@ -16,6 +17,7 @@
 #include <QtWaylandClient/private/qwaylandwindow_p.h>
 #include <QtGui/private/qhighdpiscaling_p.h>
 #include "ext-background-effect-v1-client-protocol.h"
+#include "rin-glass-shape-v1-client-protocol.h"
 #include "quickshell/include/window.h"
 
 namespace qsbe {
@@ -50,13 +52,31 @@ inline Manager* manager() {
 	return manager;
 }
 
+// Rin's glass shape manager, bound like the effect manager; null on other compositors.
+inline rin_glass_shape_manager_v1* shapes() {
+	static rin_glass_shape_manager_v1* manager = []() -> rin_glass_shape_manager_v1* {
+		auto* integration = QtWaylandClient::QWaylandIntegration::instance();
+		if (integration == nullptr) return nullptr;
+		for (const auto& global: integration->display()->globals()) {
+			if (global.interface != QLatin1String(rin_glass_shape_manager_v1_interface.name)) continue;
+			return static_cast<rin_glass_shape_manager_v1*>(
+			    wl_registry_bind(global.registry, global.id, &rin_glass_shape_manager_v1_interface, 1)
+			);
+		}
+		return nullptr;
+	}();
+	return manager;
+}
+
 // One effect object per wl_surface, ever: asking for a second one is a protocol error that
 // kills the connection (10-20 12:37, live: a reload whose old generation never let go of a
 // retaken window's effect). Every BackgroundEffect on a surface joins its list; the newest one
 // holds the object (sends its region, and destroys it when nobody is left). When the holder lets
 // go, the one before it takes the object back and sends its own region again.
+// Its glass shape object follows the same rule (one per surface, made and destroyed with the effect object).
 struct Effect {
 	ext_background_effect_surface_v1* object = nullptr;
+	rin_glass_shape_v1* shape = nullptr;
 	QList<QObject*> holders;
 };
 
@@ -67,10 +87,18 @@ inline QHash<wl_surface*, Effect>& effects() {
 
 inline ext_background_effect_surface_v1* take(Manager* manager, wl_surface* surface, QObject* holder) {
 	auto& e = effects()[surface];
-	if (e.object == nullptr) e.object = ext_background_effect_manager_v1_get_background_effect(manager->manager, surface);
+	if (e.object == nullptr) {
+		e.object = ext_background_effect_manager_v1_get_background_effect(manager->manager, surface);
+		if (auto* shapes = qsbe::shapes()) e.shape = rin_glass_shape_manager_v1_get_glass_shape(shapes, surface);
+	}
 	e.holders.removeAll(holder);
 	e.holders.append(holder);
 	return e.object;
+}
+
+inline rin_glass_shape_v1* shapeOf(wl_surface* surface) {
+	auto it = effects().constFind(surface);
+	return it == effects().constEnd() ? nullptr : it->shape;
 }
 
 inline bool holds(wl_surface* surface, const QObject* holder) {
@@ -87,6 +115,7 @@ inline void release(wl_surface* surface, QObject* holder, bool gone = false) {
 	it->holders.removeAll(holder);
 	if (gone || it->holders.isEmpty()) {
 		ext_background_effect_surface_v1_destroy(it->object);
+		if (it->shape) rin_glass_shape_v1_destroy(it->shape);
 		effects().erase(it);
 	} else if (held) {
 		QMetaObject::invokeMethod(it->holders.last(), "updateBlurRegion", Qt::QueuedConnection);
@@ -212,12 +241,18 @@ private:
 		if (!qsbe::holds(this->wlSurface, this)) return;
 		if (this->waylandWindow == nullptr || this->waylandWindow->wlSurface() == nullptr) return;
 		QRegion region;
+		auto scale = QHighDpiScaling::factor(static_cast<QWindow*>(this->window.data()));
+		auto margins = this->waylandWindow->clientSideMargins();
 		if (this->mBlurRegion) {
 			region = this->mBlurRegion->applyTo(QRect(0, 0, this->window->width(), this->window->height()));
-			auto scale = QHighDpiScaling::factor(static_cast<QWindow*>(this->window.data()));
 			if (!qFuzzyCompare(scale, 1.0)) region = QHighDpi::scale(region, scale);
-			auto margins = this->waylandWindow->clientSideMargins();
 			region.translate(margins.left(), margins.top());
+		}
+		if (auto* shape = qsbe::shapeOf(this->wlSurface)) {
+			QByteArray field;
+			if (!region.isEmpty() && this->mBlurRegion->inherits("FieldRegion")) field = fieldOf(this->mBlurRegion, scale, margins);
+			wl_array words {size_t(field.size()), size_t(field.size()), field.data()};
+			rin_glass_shape_v1_set_field(shape, &words);
 		}
 		if (region.isEmpty()) {
 			ext_background_effect_surface_v1_set_blur_region(this->surface, nullptr);
@@ -226,6 +261,37 @@ private:
 			ext_background_effect_surface_v1_set_blur_region(this->surface, wlRegion);
 			wl_region_destroy(wlRegion);
 		}
+	}
+
+	// rin-glass-shape-v1's layout: 14 numbers, then 11 a body (at most 24), surface-local through origin and scale.
+	static QByteArray fieldOf(const QObject* region, qreal scale, QMargins margins) {
+		const auto bodies = region->property("bodies").value<QList<qreal>>();
+		const auto corners = region->property("cornerRadii").value<QList<qreal>>();
+		const auto wave = region->property("wave").value<QVector4D>();
+		QList<float> words {
+		    float(margins.left()),
+		    float(margins.top()),
+		    float(scale),
+		    float(region->property("windowWidth").toReal()),
+		    float(region->property("windowHeight").toReal()),
+		    region->property("framed").toBool() ? 1.0F : 0.0F,
+		    region->property("joinsFrame").toBool() ? 1.0F : 0.0F,
+		    float(region->property("band").toReal()),
+		    float(region->property("cornerRadius").toReal()),
+		    wave.x(),
+		    wave.y(),
+		    wave.z(),
+		    wave.w(),
+		    float(region->property("waveClock").toReal()),
+		};
+		for (qsizetype n = 0, count = 0; n + 7 < bodies.size() && count < 24; n += 8, ++count) {
+			const qsizetype at = n / 2;
+			const bool own = at + 3 < corners.size();
+			for (int i = 0; i < 4; ++i) words << float(bodies[n + i]);
+			for (int i = 0; i < 4; ++i) words << float(own ? corners[at + i] : bodies[n + 4]);
+			words << float(std::max(bodies[n + 5], 0.0)) << float(bodies[n + 6]) << float(bodies[n + 7]);
+		}
+		return {reinterpret_cast<const char*>(words.constData()), qsizetype(words.size() * sizeof(float))};
 	}
 
 	void onWindowVisibleChanged() {

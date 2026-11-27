@@ -10,13 +10,14 @@ fn qmake(var: &str) -> String {
 
 /// C bindings from the system wayland-protocols XML (wayland-scanner), used by the C++ headers
 /// on Qt's own wayland queue: ext-session-lock-v1 (sessionlock.h), ext-background-effect-v1
-/// (backgroundeffect.h), and Rin's rin-window-view-v1 (windowview.h, its XML kept in protocols/).
+/// (backgroundeffect.h), and Rin's rin-window-view-v1 (windowview.h) and rin-glass-shape-v1 (backgroundeffect.h),
+/// their XML kept in protocols/.
 fn protocols() -> PathBuf {
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("protocols");
     std::fs::create_dir_all(&out).unwrap();
     let dir = String::from_utf8(Command::new("pkg-config").args(["--variable=pkgdatadir", "wayland-protocols"]).output().expect("run pkg-config").stdout).unwrap();
     let ours = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap()).join("protocols");
-    for name in ["ext-session-lock", "ext-background-effect", "rin-window-view"] {
+    for name in ["ext-session-lock", "ext-background-effect", "rin-window-view", "rin-glass-shape"] {
         let xml = if name.starts_with("rin-") { ours.join(format!("{name}-v1.xml")) } else { PathBuf::from(dir.trim()).join(format!("staging/{name}/{name}-v1.xml")) };
         println!("cargo::rerun-if-changed={}", xml.display());
         for (mode, file) in [("client-header", format!("{name}-v1-client-protocol.h")), ("private-code", format!("{name}-v1-protocol.c"))] {
@@ -95,5 +96,6 @@ fn main() {
         .file(protocols.join("ext-session-lock-v1-protocol.c"))
         .file(protocols.join("ext-background-effect-v1-protocol.c"))
         .file(protocols.join("rin-window-view-v1-protocol.c"))
+        .file(protocols.join("rin-glass-shape-v1-protocol.c"))
         .compile("qs-wayland-protocols");
 }
