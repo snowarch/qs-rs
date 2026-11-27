@@ -179,7 +179,7 @@ mod tests {
 
     fn wait_for(n: &AtomicUsize, min: usize) -> bool {
         let start = Instant::now();
-        while start.elapsed() < Duration::from_secs(2) {
+        while start.elapsed() < Duration::from_secs(5) {
             if n.load(Ordering::SeqCst) >= min {
                 return true;
             }
@@ -215,7 +215,9 @@ mod tests {
         std::thread::sleep(Duration::from_millis(100));
         assert_eq!(na.load(Ordering::SeqCst), after);
         drop(sb);
-        assert!(dirs().unwrap().lock().unwrap().count.is_empty());
+        // The hub is process-wide and other tests watch their own dirs at the same time: only
+        // this test's dir must be gone.
+        assert!(!dirs().unwrap().lock().unwrap().count.contains_key(&dir));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
