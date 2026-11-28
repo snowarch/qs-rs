@@ -261,6 +261,8 @@ public:
 
 	[[nodiscard]] qreal radius() const { return this->mRadius; }
 	void setRadius(qreal radius) {
+		// A negative radius is a protocol error on the compositor side, fatal to the whole connection.
+		radius = qMax<qreal>(0, radius);
 		if (qFuzzyCompare(radius, this->mRadius)) return;
 		this->mRadius = radius;
 		this->frame();
@@ -432,7 +434,7 @@ private:
 		// The rounded rect the window shows in: the item's (the destination's, when it fits inside), cut by every
 		// clipping ancestor and every ClippingRectangle. A corner keeps the radius of the shape that owns it.
 		hole = this->mFillMode == PreserveAspectFit ? destination : box;
-		holeRadius = qMin(this->mRadius, qMin(hole.width(), hole.height()) / 2);
+		holeRadius = qMax<qreal>(0, qMin(this->mRadius, qMin(hole.width(), hole.height()) / 2));
 		out.destination = this->mapRectToScene(destination);
 		const QRectF own = this->mapRectToScene(hole);
 		if (own.isEmpty()) return false;
@@ -485,7 +487,8 @@ private:
 		};
 		look.destination = place(look.destination);
 		look.clip = place(look.clip);
-		for (auto& radius: look.radii) radius *= scale;
+		// An ancestor's corner can come in negative; the compositor refuses one.
+		for (auto& radius: look.radii) radius = qMax<qreal>(0, radius) * scale;
 		const bool fresh = this->view == nullptr;
 		if (fresh) {
 			this->view = rin_window_view_manager_v1_get_window_view(manager, surface, this->mToplevelId.toUtf8().constData());
